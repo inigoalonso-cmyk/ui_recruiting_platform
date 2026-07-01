@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Pre-screening · Panel de criterios</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<div class="app">
+
+  <aside class="rail">
+    <div class="rail-header">
+      <span class="rail-mark">◇</span>
+      <div>
+        <div class="rail-title">Criterios de screening</div>
+        <div class="rail-subtitle">Archivo de evaluación</div>
+      </div>
+    </div>
+
+    <div class="rail-section-label">Carpetas</div>
+    <div id="folder-list" class="folder-list"></div>
+
+    <form id="new-job-form" class="new-job-form">
+      <input id="new-job-name" type="text" placeholder="Nombre del puesto…" autocomplete="off" />
+      <button type="submit">+ Nueva carpeta</button>
+    </form>
+  </aside>
+
+  <main class="main">
+    <div id="content"></div>
+  </main>
+
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script src="app.js"></script>
+</body>
+</html>
