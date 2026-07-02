@@ -5,18 +5,18 @@ const ashby = require('./ashby');
 
 const router = express.Router();
 
-// ---------- Middleware: proteger endpoints que llaman workflows externos (Happy Robot) ----------
+// ---------- Middleware: protect endpoints called by external workflows (Happy Robot) ----------
 function requireInternalKey(req, res, next) {
   const configured = process.env.INTERNAL_API_KEY;
-  if (!configured) return next(); // si no se configuró, no bloqueamos (modo dev)
+  if (!configured) return next(); // if not configured, we don't block (dev mode)
   const provided = req.header('x-api-key');
   if (provided !== configured) {
-    return res.status(401).json({ error: 'x-api-key inválida o ausente' });
+    return res.status(401).json({ error: 'invalid or missing x-api-key' });
   }
   next();
 }
 
-// ---------- JOBS (carpetas) ----------
+// ---------- JOBS (folders) ----------
 router.get('/jobs', (req, res) => {
   const jobs = db.prepare('SELECT * FROM jobs ORDER BY created_at DESC').all();
   res.json(jobs);
@@ -24,7 +24,7 @@ router.get('/jobs', (req, res) => {
 
 router.post('/jobs', (req, res) => {
   const { name, ashby_job_id } = req.body;
-  if (!name || !name.trim()) return res.status(400).json({ error: 'name es obligatorio' });
+  if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
   const id = uuid();
   db.prepare('INSERT INTO jobs (id, name, ashby_job_id) VALUES (?, ?, ?)').run(id, name.trim(), ashby_job_id || null);
   res.status(201).json(db.prepare('SELECT * FROM jobs WHERE id = ?').get(id));
@@ -33,7 +33,7 @@ router.post('/jobs', (req, res) => {
 router.put('/jobs/:id', (req, res) => {
   const { name, ashby_job_id } = req.body;
   const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
-  if (!job) return res.status(404).json({ error: 'puesto no encontrado' });
+  if (!job) return res.status(404).json({ error: 'job not found' });
   db.prepare('UPDATE jobs SET name = COALESCE(?, name), ashby_job_id = COALESCE(?, ashby_job_id) WHERE id = ?')
     .run(name || null, ashby_job_id || null, req.params.id);
   res.json(db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id));
@@ -44,7 +44,7 @@ router.delete('/jobs/:id', (req, res) => {
   res.status(204).end();
 });
 
-// ---------- PARÁMETROS (generales si :jobId === 'general', o por puesto) ----------
+// ---------- PARAMETERS (general if :jobId === 'general', or per job) ----------
 router.get('/jobs/:jobId/parameters', (req, res) => {
   const jobId = req.params.jobId === 'general' ? null : req.params.jobId;
   const rows = jobId === null
@@ -56,9 +56,9 @@ router.get('/jobs/:jobId/parameters', (req, res) => {
 router.post('/jobs/:jobId/parameters', (req, res) => {
   const jobId = req.params.jobId === 'general' ? null : req.params.jobId;
   const { name, weight, added_by } = req.body;
-  if (!name || !name.trim()) return res.status(400).json({ error: 'name es obligatorio' });
+  if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
   const w = Number(weight);
-  if (Number.isNaN(w) || w < 0 || w > 10) return res.status(400).json({ error: 'weight debe estar entre 0 y 10' });
+  if (Number.isNaN(w) || w < 0 || w > 10) return res.status(400).json({ error: 'weight must be between 0 and 10' });
   const id = uuid();
   db.prepare('INSERT INTO parameters (id, job_id, name, weight, added_by) VALUES (?, ?, ?, ?, ?)')
     .run(id, jobId, name.trim(), w, added_by || null);
@@ -68,9 +68,9 @@ router.post('/jobs/:jobId/parameters', (req, res) => {
 router.put('/parameters/:id', (req, res) => {
   const { name, weight } = req.body;
   const existing = db.prepare('SELECT * FROM parameters WHERE id = ?').get(req.params.id);
-  if (!existing) return res.status(404).json({ error: 'parámetro no encontrado' });
+  if (!existing) return res.status(404).json({ error: 'parameter not found' });
   const w = weight !== undefined ? Number(weight) : existing.weight;
-  if (Number.isNaN(w) || w < 0 || w > 10) return res.status(400).json({ error: 'weight debe estar entre 0 y 10' });
+  if (Number.isNaN(w) || w < 0 || w > 10) return res.status(400).json({ error: 'weight must be between 0 and 10' });
   db.prepare('UPDATE parameters SET name = COALESCE(?, name), weight = ? WHERE id = ?')
     .run(name || null, w, req.params.id);
   res.json(db.prepare('SELECT * FROM parameters WHERE id = ?').get(req.params.id));
@@ -81,7 +81,7 @@ router.delete('/parameters/:id', (req, res) => {
   res.status(204).end();
 });
 
-// ---------- KILLER QUESTIONS (por puesto) ----------
+// ---------- KILLER QUESTIONS (per job) ----------
 router.get('/jobs/:jobId/killer-questions', (req, res) => {
   const rows = db.prepare('SELECT * FROM killer_questions WHERE job_id = ? ORDER BY created_at').all(req.params.jobId);
   res.json(rows);
@@ -89,7 +89,7 @@ router.get('/jobs/:jobId/killer-questions', (req, res) => {
 
 router.post('/jobs/:jobId/killer-questions', (req, res) => {
   const { question, added_by } = req.body;
-  if (!question || !question.trim()) return res.status(400).json({ error: 'question es obligatorio' });
+  if (!question || !question.trim()) return res.status(400).json({ error: 'question is required' });
   const id = uuid();
   db.prepare('INSERT INTO killer_questions (id, job_id, question, added_by) VALUES (?, ?, ?, ?)')
     .run(id, req.params.jobId, question.trim(), added_by || null);
@@ -101,10 +101,10 @@ router.delete('/killer-questions/:id', (req, res) => {
   res.status(204).end();
 });
 
-// ---------- CONFIG CONSOLIDADA: la que consume Happy Robot para evaluar a un candidato ----------
+// ---------- CONSOLIDATED CONFIG: what Happy Robot consumes to evaluate a candidate ----------
 router.get('/jobs/:jobId/evaluation-config', requireInternalKey, (req, res) => {
   const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.jobId);
-  if (!job) return res.status(404).json({ error: 'puesto no encontrado' });
+  if (!job) return res.status(404).json({ error: 'job not found' });
 
   const generalParams = db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL').all();
   const jobParams = db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ?').all(job.id);
@@ -118,7 +118,7 @@ router.get('/jobs/:jobId/evaluation-config', requireInternalKey, (req, res) => {
   });
 });
 
-// ---------- INGESTA DE SCORE (Happy Robot -> esta app -> Ashby) ----------
+// ---------- SCORE INGESTION (Happy Robot -> this app -> Ashby) ----------
 router.post('/candidates/score', requireInternalKey, async (req, res) => {
   const {
     job_id,
@@ -131,7 +131,7 @@ router.post('/candidates/score', requireInternalKey, async (req, res) => {
   } = req.body;
 
   if (score === undefined || Number.isNaN(Number(score))) {
-    return res.status(400).json({ error: 'score es obligatorio y debe ser numérico' });
+    return res.status(400).json({ error: 'score is required and must be numeric' });
   }
 
   const id = uuid();
@@ -146,8 +146,8 @@ router.post('/candidates/score', requireInternalKey, async (req, res) => {
       const fieldId = process.env.ASHBY_SCORE_FIELD_ID;
       const objectType = process.env.ASHBY_SCORE_OBJECT_TYPE || 'Application';
       const objectId = objectType === 'Candidate' ? ashby_candidate_id : ashby_application_id;
-      if (!fieldId) throw new Error('ASHBY_SCORE_FIELD_ID no está configurado');
-      if (!objectId) throw new Error(`Falta ${objectType === 'Candidate' ? 'ashby_candidate_id' : 'ashby_application_id'} en el request`);
+      if (!fieldId) throw new Error('ASHBY_SCORE_FIELD_ID is not configured');
+      if (!objectId) throw new Error(`Missing ${objectType === 'Candidate' ? 'ashby_candidate_id' : 'ashby_application_id'} in the request`);
 
       await ashby.setCustomFieldScore({ objectId, objectType, fieldId, value: Number(score) });
       db.prepare('UPDATE score_log SET synced_to_ashby = 1 WHERE id = ?').run(id);

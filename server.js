@@ -14,12 +14,12 @@ app.use('/api', apiRoutes);
 
 app.get('/api/health', (req, res) => res.json({ ok: true }));
 
-// Frontend estático
+// Static frontend
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 app.listen(PORT, () => {
-  console.log(`Pre-screening platform escuchando en puerto ${PORT}`);
+  console.log(`Pre-screening platform listening on port ${PORT}`);
 });

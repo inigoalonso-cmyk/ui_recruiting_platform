@@ -2,8 +2,8 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 
-// Railway: monta un volumen persistente en /data si quieres que la DB sobreviva
-// a los redeploys. Si no hay volumen, usamos un archivo local (se perderá en cada deploy).
+// Railway: mount a persistent volume at /data if you want the DB to survive
+// redeploys. If there's no volume, we use a local file (it will be lost on each deploy).
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- job_id = NULL significa "parámetro general" (aplica a todos los puestos)
+-- job_id = NULL means "general parameter" (applies to all jobs)
 CREATE TABLE IF NOT EXISTS parameters (
   id TEXT PRIMARY KEY,
   job_id TEXT REFERENCES jobs(id) ON DELETE CASCADE,

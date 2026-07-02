@@ -4,7 +4,7 @@ const ASHBY_BASE_URL = 'https://api.ashbyhq.com';
 
 function authHeader() {
   const key = process.env.ASHBY_API_KEY;
-  if (!key) throw new Error('ASHBY_API_KEY no está configurada en las variables de entorno');
+  if (!key) throw new Error('ASHBY_API_KEY is not set in the environment variables');
   const token = Buffer.from(`${key}:`).toString('base64');
   return `Basic ${token}`;
 }
@@ -27,8 +27,8 @@ async function ashbyRequest(method, body = {}) {
 }
 
 /**
- * Escribe el score de pre-screening en un custom field de Ashby.
- * objectType suele ser "Application" o "Candidate" según dónde hayáis creado el campo.
+ * Writes the pre-screening score to a custom field in Ashby.
+ * objectType is usually "Application" or "Candidate" depending on where the field was created.
  */
 async function setCustomFieldScore({ objectId, objectType, fieldId, value }) {
   return ashbyRequest('customField.setValue', {

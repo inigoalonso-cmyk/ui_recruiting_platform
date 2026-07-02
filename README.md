@@ -1,54 +1,54 @@
 # Pre-screening Platform
 
-App interna para definir, por cada puesto de trabajo, qué parámetros se evalúan y con qué peso (sobre 10), además de las "killer questions" para la fase de entrevista con agente. El workflow de Happy Robot consulta esta app para saber qué evaluar, y le devuelve el score, que esta app sincroniza con Ashby.
+Internal app to define, for each job, which parameters are evaluated and with what weight (out of 10), plus the "killer questions" for the agent interview phase. The Happy Robot workflow queries this app to know what to evaluate, and returns the score, which this app syncs to Ashby.
 
-## Estructura
-
-```
-server.js              -> servidor Express
-db/index.js            -> esquema SQLite (jobs, parameters, killer_questions, score_log)
-routes/api.js          -> endpoints de la app
-routes/ashby.js         -> cliente de la API de Ashby
-public/                -> UI (HTML/CSS/JS, sin build step)
-```
-
-## Desplegar en Railway
-
-1. Sube esta carpeta a un repo de GitHub (o usa `railway up` desde la CLI directamente).
-2. En Railway: **New Project → Deploy from GitHub repo**.
-3. Añade un **Volume** montado en `/data` (para que la base de datos SQLite no se borre en cada redeploy) y define `DATA_DIR=/data` en las variables de entorno.
-4. Configura las variables de entorno (ver `.env.example`):
-   - `INTERNAL_API_KEY` — clave que Happy Robot enviará en el header `x-api-key`.
-   - `ASHBY_API_KEY` — tu API key de Ashby (Ashby → Settings → API).
-   - `ASHBY_SCORE_FIELD_ID` — id del custom field en Ashby donde se guarda el score (créalo en Ashby y usa `customField.list` para obtener su id, o cópialo desde la propia UI de Ashby si lo muestra).
-   - `ASHBY_SCORE_OBJECT_TYPE` — `Application` o `Candidate`, según en qué tipo de objeto hayáis creado el custom field.
-5. Railway detecta el proyecto Node automáticamente (Nixpacks) y ejecuta `npm install && npm start`.
-
-## Cómo la usa Happy Robot
-
-### 1. Leer los criterios de un puesto antes de evaluar a un candidato
+## Structure
 
 ```
-GET https://TU-APP.up.railway.app/api/jobs/{jobId}/evaluation-config
+server.js              -> Express server
+db/index.js            -> SQLite schema (jobs, parameters, killer_questions, score_log)
+routes/api.js          -> app endpoints
+routes/ashby.js         -> Ashby API client
+public/                -> UI (HTML/CSS/JS, no build step)
+```
+
+## Deploy on Railway
+
+1. Push this folder to a GitHub repo (or use `railway up` directly from the CLI).
+2. On Railway: **New Project → Deploy from GitHub repo**.
+3. Add a **Volume** mounted at `/data` (so the SQLite database is not wiped on every redeploy) and set `DATA_DIR=/data` in the environment variables.
+4. Configure the environment variables (see `.env.example`):
+   - `INTERNAL_API_KEY` — key that Happy Robot will send in the `x-api-key` header.
+   - `ASHBY_API_KEY` — your Ashby API key (Ashby → Settings → API).
+   - `ASHBY_SCORE_FIELD_ID` — id of the custom field in Ashby where the score is stored (create it in Ashby and use `customField.list` to get its id, or copy it from the Ashby UI if it shows it).
+   - `ASHBY_SCORE_OBJECT_TYPE` — `Application` or `Candidate`, depending on which object type you created the custom field on.
+5. Railway detects the Node project automatically (Nixpacks) and runs `npm install && npm start`.
+
+## How Happy Robot uses it
+
+### 1. Read a job's criteria before evaluating a candidate
+
+```
+GET https://YOUR-APP.up.railway.app/api/jobs/{jobId}/evaluation-config
 Header: x-api-key: <INTERNAL_API_KEY>
 ```
 
-Devuelve:
+Returns:
 ```json
 {
   "job": { "id": "...", "name": "Field Engineer", "ashby_job_id": "..." },
-  "general_parameters": [{ "name": "Disponibilidad inmediata", "weight": 2, "added_by": "Jorge" }],
-  "job_parameters": [{ "name": "Años de experiencia en campo", "weight": 4, "added_by": "Iñigo" }],
-  "killer_questions": [{ "question": "¿Puedes viajar más del 50% del tiempo?", "added_by": "Jackson" }]
+  "general_parameters": [{ "name": "Immediate availability", "weight": 2, "added_by": "Jorge" }],
+  "job_parameters": [{ "name": "Years of field experience", "weight": 4, "added_by": "Iñigo" }],
+  "killer_questions": [{ "question": "Can you travel more than 50% of the time?", "added_by": "Jackson" }]
 }
 ```
 
-Con esto el prompt del agente de pre-screening construye su lista de criterios y pesos.
+With this, the pre-screening agent's prompt builds its list of criteria and weights.
 
-### 2. Enviar el score calculado (y sincronizarlo con Ashby)
+### 2. Send the calculated score (and sync it to Ashby)
 
 ```
-POST https://TU-APP.up.railway.app/api/candidates/score
+POST https://YOUR-APP.up.railway.app/api/candidates/score
 Header: x-api-key: <INTERNAL_API_KEY>
 Body:
 {
@@ -62,14 +62,14 @@ Body:
 }
 ```
 
-La app guarda el resultado en `score_log` y, si `sync_to_ashby` es `true`, llama a `customField.setValue` en Ashby para escribir el score directamente en el custom field configurado.
+The app stores the result in `score_log` and, if `sync_to_ashby` is `true`, calls `customField.setValue` in Ashby to write the score directly to the configured custom field.
 
-### 3. Para el segundo workflow (killer questions)
+### 3. For the second workflow (killer questions)
 
-El agente de la llamada de entrevista puede pedir las killer questions del puesto con el mismo endpoint `evaluation-config` (campo `killer_questions`), o crear un endpoint dedicado más adelante si necesitáis algo distinto (por ejemplo, marcar cuál se usó en cada llamada).
+The interview-call agent can request the job's killer questions from the same `evaluation-config` endpoint (`killer_questions` field), or you can create a dedicated endpoint later if you need something different (for example, marking which one was used on each call).
 
-## Notas
+## Notes
 
-- Los "pesos" son libres por diseño (cada persona añade el suyo); la UI muestra la suma total para detectar si os pasáis de 10 entre todos, pero no lo bloquea — decidid vosotros si normalizar o no antes de que el agente calcule el score final.
-- No hay autenticación de usuario en la UI (pensada para uso interno del equipo). Si la vais a dejar pública en Railway, al menos añadid algo de auth básica delante (Railway lo permite fácilmente) para que no cualquiera pueda tocar los parámetros.
-- Datos protegidos: la UI no impide que alguien añada un parámetro discriminatorio (edad, etc.) — esa validación tiene que vivir en el prompt del agente y en la revisión humana del equipo, ver conversación sobre este punto.
+- The "weights" are free by design (each person adds their own); the UI shows the total sum so you can spot if you go over 10 between everyone, but it does not block it — decide for yourselves whether to normalize before the agent computes the final score.
+- There is no user authentication in the UI (it's intended for internal team use). If you're going to leave it public on Railway, at least put some basic auth in front of it (Railway makes this easy) so not just anyone can change the parameters.
+- Protected data: the UI does not prevent someone from adding a discriminatory parameter (age, etc.) — that validation has to live in the agent's prompt and in the team's human review; see the conversation about this point.
