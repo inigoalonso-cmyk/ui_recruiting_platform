@@ -64,9 +64,58 @@ Body:
 
 The app stores the result in `score_log` and, if `sync_to_ashby` is `true`, calls `customField.setValue` in Ashby to write the score directly to the configured custom field.
 
-### 3. For the second workflow (killer questions)
+### 3. Agent Interview (Phase 2)
 
-The interview-call agent can request the job's killer questions from the same `evaluation-config` endpoint (`killer_questions` field), or you can create a dedicated endpoint later if you need something different (for example, marking which one was used on each call).
+The AI voice agent asks the job's killer questions verbally as true/false and the
+backend scores them **deterministically** (plain weighted arithmetic — no AI
+judgment). This backend never changes the Ashby stage or archives anyone; the
+Happy Robot workflow does that based on the `passed` flag.
+
+All interview endpoints are protected by the same `x-api-key` header as above.
+
+```
+GET  /api/interview/questions?applicationId=...        -> { applicationId, jobId, stageEnteredAt, questions: [{id, text, weight}] }
+POST /api/interview/attempts/:applicationId/increment  -> { attempts }   # zero-engagement (no answers) counter
+POST /api/interview/results                             -> { score, passed, coverage: {asked, total}, sync }
+GET  /api/interview/lookup?phone=...                    -> { matched, candidateName, jobTitle, companyName, candidateLanguage, recordingEnabled, killerQuestions } | { matched: false }
+```
+
+`POST /api/interview/results` body:
+```json
+{
+  "applicationId": "...",
+  "callConnected": true,
+  "answers": [{ "question_id": "...", "answer": true }, { "question_id": "...", "answer": null }],
+  "callbackRequested": false,
+  "callNotes": "..."
+}
+```
+Score = (weighted count of `true` among questions actually asked ÷ weighted total
+of questions actually asked) × 10. `answer: null` means the question was not asked
+and is excluded from both the numerator and denominator. `passed = score >= 8`.
+The result is stored, and the score + coverage are synced to the Ashby custom
+fields configured via `ASHBY_INTERVIEW_SCORE_FIELD_ID` / `ASHBY_INTERVIEW_COVERAGE_FIELD_ID`.
+
+> **Note on `/interview/lookup`:** Ashby's documented candidate search covers
+> name/email; phone search is not confirmed. The endpoint does a best-effort live
+> Ashby lookup (isolated in `routes/ashby.js`) and returns `{ matched: false }`
+> when nothing is found — verify the Ashby request shape before relying on it.
+
+## History tab
+
+The recruiter app has a **History** tab showing, per application, the full
+evaluation timeline (Prescreen → Agent Interview), the killer questions with the
+true/false answer captured for each, call details (connected, callback, notes,
+zero-engagement attempts), and charts (interview score vs. the 8/10 threshold and
+a coverage donut). It reads from two open, read-only endpoints:
+
+```
+GET /api/history                              -> list of evaluated applications
+GET /api/applications/:applicationId/history  -> full detail for one application
+```
+
+Killer questions are still entered exactly where they were before; the interview
+phase reuses them automatically (each carries an optional `weight`, default 1).
 
 ## Notes
 

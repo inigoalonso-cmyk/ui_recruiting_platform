@@ -21,13 +21,20 @@
       </div>
     </div>
 
-    <div class="rail-section-label">Folders</div>
-    <div id="folder-list" class="folder-list"></div>
+    <nav class="rail-nav">
+      <button id="nav-criteria" class="nav-item active" type="button">Criteria</button>
+      <button id="nav-history" class="nav-item" type="button">History</button>
+    </nav>
 
-    <form id="new-job-form" class="new-job-form">
-      <input id="new-job-name" type="text" placeholder="Job title…" autocomplete="off" />
-      <button type="submit">+ New folder</button>
-    </form>
+    <div id="criteria-nav">
+      <div class="rail-section-label">Folders</div>
+      <div id="folder-list" class="folder-list"></div>
+
+      <form id="new-job-form" class="new-job-form">
+        <input id="new-job-name" type="text" placeholder="Job title…" autocomplete="off" />
+        <button type="submit">+ New folder</button>
+      </form>
+    </div>
   </aside>
 
   <main class="main">

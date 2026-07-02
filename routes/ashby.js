@@ -51,9 +51,34 @@ async function listJobs() {
   return ashbyRequest('job.list', {});
 }
 
+/**
+ * Fetch a single application (used to resolve which job an application belongs
+ * to, and its current interview stage).
+ */
+async function getApplicationInfo(applicationId) {
+  return ashbyRequest('application.info', { applicationId });
+}
+
+/**
+ * Best-effort live lookup of a candidate by phone number.
+ *
+ * NOTE: Ashby's documented `candidate.search` supports `email` and `name`.
+ * Phone search is NOT confirmed in the docs, so we send the phone under a few
+ * plausible keys and let Ashby ignore the ones it doesn't understand. Callers
+ * MUST still verify each returned candidate's phone numbers themselves (see
+ * routes/api.js), and treat an empty/errored result as "no match". Verify the
+ * real request shape against the Ashby API reference before relying on this.
+ */
+async function searchCandidatesByPhone(phone) {
+  const data = await ashbyRequest('candidate.search', { phoneNumber: phone, phone });
+  return (data && data.results) || [];
+}
+
 module.exports = {
   setCustomFieldScore,
   listCustomFields,
   getCandidateInfo,
+  getApplicationInfo,
+  searchCandidatesByPhone,
   listJobs,
 };

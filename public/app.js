@@ -1,6 +1,8 @@
 const state = {
   jobs: [],
   selected: 'general', // 'general' or job.id
+  view: 'criteria',    // 'criteria' or 'history'
+  historyApp: null,    // selected application id in the history detail view
 };
 
 const contentEl = document.getElementById('content');
@@ -57,11 +59,32 @@ function escapeHtml(str) {
 
 async function selectFolder(id) {
   state.selected = id;
+  state.view = 'criteria';
+  state.historyApp = null;
+  document.getElementById('nav-criteria').classList.add('active');
+  document.getElementById('nav-history').classList.remove('active');
+  document.getElementById('criteria-nav').style.display = '';
   renderFolderList();
   await renderContent();
 }
 
+function setView(view) {
+  state.view = view;
+  document.getElementById('nav-criteria').classList.toggle('active', view === 'criteria');
+  document.getElementById('nav-history').classList.toggle('active', view === 'history');
+  document.getElementById('criteria-nav').style.display = view === 'criteria' ? '' : 'none';
+  renderContent();
+}
+
 async function renderContent() {
+  if (state.view === 'history') {
+    if (state.historyApp) {
+      await renderHistoryDetail(state.historyApp);
+    } else {
+      await renderHistoryList();
+    }
+    return;
+  }
   if (state.selected === 'general') {
     await renderGeneralView();
   } else {
@@ -265,6 +288,222 @@ document.getElementById('new-job-form').addEventListener('submit', async (e) => 
     await selectFolder(job.id);
     showToast('Folder created');
   } catch (err) { showToast(err.message, true); }
+});
+
+// ================= HISTORY VIEW =================
+
+function fmtDate(iso) {
+  if (!iso) return '—';
+  // SQLite datetime('now') returns UTC "YYYY-MM-DD HH:MM:SS".
+  const d = new Date(iso.replace(' ', 'T') + 'Z');
+  if (isNaN(d)) return iso;
+  return d.toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function scoreClass(score) {
+  if (score == null) return '';
+  return score >= 8 ? 'pass' : 'fail';
+}
+
+async function renderHistoryList() {
+  contentEl.innerHTML = `
+    <div class="folder-label">Evaluation history</div>
+    <h1 class="folder-title">History</h1>
+    <div class="folder-meta">Every application that has been evaluated across Prescreen and Agent Interview.</div>
+    <div class="section" id="history-section"><div class="empty-state">Loading…</div></div>`;
+
+  const section = document.getElementById('history-section');
+  let rows;
+  try {
+    rows = await api('/history');
+  } catch (err) {
+    section.innerHTML = `<div class="empty-state">Could not load history: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  if (!rows.length) {
+    section.innerHTML = `<div class="empty-state">No evaluations recorded yet.</div>`;
+    return;
+  }
+
+  const head = `
+    <div class="history-row history-head">
+      <div>Application</div><div>Job</div><div>Prescreen</div><div>Interview</div><div>Last activity</div>
+    </div>`;
+  const body = rows.map((r) => {
+    const pre = r.prescreen ? `<span class="pill ${scoreClass(r.prescreen.score)}">${r.prescreen.score ?? '—'}/10</span>` : '<span class="pill muted">—</span>';
+    const iv = r.interview
+      ? `<span class="pill ${r.interview.passed ? 'pass' : 'fail'}">${r.interview.score ?? '—'}/10 · ${r.interview.passed ? 'PASS' : 'FAIL'}</span>`
+      : '<span class="pill muted">—</span>';
+    return `
+      <button class="history-row history-item" data-app="${escapeHtml(r.application_id)}">
+        <div class="mono">${escapeHtml(r.application_id)}</div>
+        <div>${escapeHtml(r.job_name || '—')}</div>
+        <div>${pre}</div>
+        <div>${iv}</div>
+        <div class="mono muted">${fmtDate(r.last_activity)}</div>
+      </button>`;
+  }).join('');
+
+  section.innerHTML = `<div class="card history-table">${head}${body}</div>`;
+  section.querySelectorAll('.history-item').forEach((el) => {
+    el.addEventListener('click', () => {
+      state.historyApp = el.dataset.app;
+      renderContent();
+    });
+  });
+}
+
+// Horizontal score bar (0–10) with the 8/10 pass threshold marked.
+function scoreGauge(score, label) {
+  const s = score == null ? 0 : Math.max(0, Math.min(10, score));
+  const pct = (s / 10) * 100;
+  const cls = score == null ? 'muted' : (score >= 8 ? 'pass' : 'fail');
+  return `
+    <div class="chart-block">
+      <div class="chart-title">${escapeHtml(label)}</div>
+      <div class="gauge">
+        <div class="gauge-fill ${cls}" style="width:${pct}%"></div>
+        <div class="gauge-threshold" style="left:80%" title="Pass threshold: 8/10"></div>
+      </div>
+      <div class="gauge-scale"><span>0</span><span class="gauge-mark">8 · pass</span><span>10</span></div>
+      <div class="chart-value ${cls}">${score == null ? 'No score' : score + ' / 10'}</div>
+    </div>`;
+}
+
+// SVG donut showing questions answered vs. not reached.
+function coverageDonut(asked, total) {
+  const a = asked || 0;
+  const t = total || 0;
+  const frac = t > 0 ? a / t : 0;
+  const r = 42;
+  const c = 2 * Math.PI * r;
+  const dash = c * frac;
+  return `
+    <div class="chart-block">
+      <div class="chart-title">Coverage</div>
+      <svg class="donut" viewBox="0 0 110 110" width="120" height="120">
+        <circle cx="55" cy="55" r="${r}" class="donut-track" fill="none" stroke-width="12" />
+        <circle cx="55" cy="55" r="${r}" class="donut-value" fill="none" stroke-width="12"
+          stroke-dasharray="${dash} ${c - dash}" stroke-dashoffset="${c / 4}" stroke-linecap="round"
+          transform="rotate(-90 55 55)" />
+        <text x="55" y="52" class="donut-num" text-anchor="middle">${a}/${t}</text>
+        <text x="55" y="68" class="donut-sub" text-anchor="middle">asked</text>
+      </svg>
+      <div class="chart-value muted">${t > 0 ? Math.round(frac * 100) + '% of questions reached' : 'No questions'}</div>
+    </div>`;
+}
+
+function answerChip(answer) {
+  if (answer === true) return '<span class="ans ans-yes">TRUE</span>';
+  if (answer === false) return '<span class="ans ans-no">FALSE</span>';
+  return '<span class="ans ans-na">not asked</span>';
+}
+
+async function renderHistoryDetail(applicationId) {
+  contentEl.innerHTML = `<div class="empty-state">Loading…</div>`;
+  let d;
+  try {
+    d = await api(`/applications/${encodeURIComponent(applicationId)}/history`);
+  } catch (err) {
+    contentEl.innerHTML = `<div class="empty-state">Could not load application: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  const pre = d.prescreen;
+  const iv = d.interview;
+
+  const timeline = [];
+  if (d.stage_entered_at) {
+    timeline.push({ date: d.stage_entered_at, title: 'Entered Agent Interview stage', body: '' });
+  }
+  if (pre) {
+    timeline.push({
+      date: pre.date,
+      title: `Prescreen — ${pre.score ?? '—'}/10`,
+      body: pre.rationale ? escapeHtml(pre.rationale) : (pre.status ? `Status: ${escapeHtml(pre.status)}` : ''),
+    });
+  }
+  if (iv) {
+    timeline.push({
+      date: iv.date,
+      title: `Agent Interview — ${iv.score ?? '—'}/10 · ${iv.passed ? 'PASSED' : 'FAILED'}`,
+      body: `Coverage: ${iv.coverage.asked} of ${iv.coverage.total} questions${iv.call_connected ? '' : ' · call did not connect'}`,
+    });
+  }
+  timeline.sort((a, b) => (a.date || '').localeCompare(b.date || ''));
+
+  const timelineHtml = timeline.length
+    ? timeline.map((t) => `
+        <div class="tl-item">
+          <div class="tl-dot"></div>
+          <div class="tl-body">
+            <div class="tl-title">${t.title}</div>
+            ${t.body ? `<div class="tl-text">${t.body}</div>` : ''}
+            <div class="tl-date mono muted">${fmtDate(t.date)}</div>
+          </div>
+        </div>`).join('')
+    : '<div class="empty-state">No timeline events.</div>';
+
+  const questionsHtml = d.questions.length
+    ? `<div class="card">
+        ${d.questions.map((q) => `
+          <div class="q-row">
+            <div class="q-text">${escapeHtml(q.text)}${q.weight != null && q.weight !== 1 ? ` <span class="q-weight mono">×${q.weight}</span>` : ''}</div>
+            <div>${answerChip(q.answer)}</div>
+          </div>`).join('')}
+      </div>`
+    : '<div class="empty-state">No killer questions on record for this job.</div>';
+
+  const chartsHtml = iv
+    ? `<div class="charts">${scoreGauge(iv.score, 'Interview score')}${coverageDonut(iv.coverage.asked, iv.coverage.total)}</div>`
+    : (pre ? `<div class="charts">${scoreGauge(pre.score, 'Prescreen score')}</div>` : '');
+
+  const notesBits = [];
+  if (iv) {
+    notesBits.push(`<div><span class="meta-k">Call connected</span><span class="meta-v">${iv.call_connected ? 'Yes' : 'No'}</span></div>`);
+    notesBits.push(`<div><span class="meta-k">Callback requested</span><span class="meta-v">${iv.callback_requested ? 'Yes' : 'No'}</span></div>`);
+    if (iv.call_notes) notesBits.push(`<div class="full"><span class="meta-k">Call notes</span><span class="meta-v">${escapeHtml(iv.call_notes)}</span></div>`);
+  }
+  notesBits.push(`<div><span class="meta-k">Zero-engagement attempts</span><span class="meta-v">${d.attempts}</span></div>`);
+
+  contentEl.innerHTML = `
+    <button class="back-link" id="history-back">← Back to history</button>
+    <div class="folder-label">Application history</div>
+    <h1 class="folder-title mono">${escapeHtml(applicationId)}</h1>
+    <div class="folder-meta">
+      ${d.job ? `Job: ${escapeHtml(d.job.name)}` : 'Job: —'}
+      ${d.candidate_id ? ` · Candidate: <span class="mono">${escapeHtml(d.candidate_id)}</span>` : ''}
+    </div>
+
+    ${chartsHtml ? `<div class="section">${chartsHtml}</div>` : ''}
+
+    <div class="section">
+      <div class="section-heading"><h2>Timeline</h2></div>
+      <div class="timeline">${timelineHtml}</div>
+    </div>
+
+    <div class="section">
+      <div class="section-heading"><h2>Killer questions & answers</h2></div>
+      <div class="section-hint">True / false answers captured during the Agent Interview call.</div>
+      ${questionsHtml}
+    </div>
+
+    <div class="section">
+      <div class="section-heading"><h2>Call details</h2></div>
+      <div class="card meta-grid">${notesBits.join('')}</div>
+    </div>
+  `;
+
+  document.getElementById('history-back').addEventListener('click', () => {
+    state.historyApp = null;
+    renderContent();
+  });
+}
+
+document.getElementById('nav-criteria').addEventListener('click', () => setView('criteria'));
+document.getElementById('nav-history').addEventListener('click', () => {
+  state.historyApp = null;
+  setView('history');
 });
 
 (async function init() {
