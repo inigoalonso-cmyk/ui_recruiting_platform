@@ -599,22 +599,23 @@ router.delete('/recruiters/:id', (req, res) => {
 // GET /api/recruiters?job={job_title}
 // Consumed by an external automation (polled ~every 15 min). Returns the
 // primary (first-added) recruiter for the job. Job title matching is
-// case-insensitive and trimmed. Response shape is stable — do not change:
-//   { "recruiterName": string, "recruiterEmail": string, "calendarLink": string }
-// 404 { error } when no recruiter is configured for the given job title.
+// case-insensitive and trimmed. Always responds 200 with a `found` flag —
+// response shape is stable, do not change:
+//   found: { "found": true, "recruiterName": string, "recruiterEmail": string, "calendarLink": string }
+//   none:  { "found": false }
+// 400 { error } only when the `job` query parameter is missing/empty.
 router.get('/recruiters', requireInternalKey, (req, res) => {
   const job = (req.query.job || '').trim();
   if (!job) return res.status(400).json({ error: 'job query parameter is required' });
 
   const folder = db.prepare('SELECT id FROM recruiter_jobs WHERE lower(trim(name)) = lower(?)').get(job);
-  if (!folder) return res.status(404).json({ error: `no recruiter configured for job "${job}"` });
-
-  const recruiter = db.prepare(
+  const recruiter = folder && db.prepare(
     'SELECT name, email, calendar_link FROM recruiters WHERE recruiter_job_id = ? ORDER BY created_at ASC LIMIT 1'
   ).get(folder.id);
-  if (!recruiter) return res.status(404).json({ error: `no recruiter configured for job "${job}"` });
+  if (!recruiter) return res.json({ found: false });
 
   res.json({
+    found: true,
     recruiterName: recruiter.name,
     recruiterEmail: recruiter.email,
     calendarLink: recruiter.calendar_link,

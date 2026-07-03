@@ -135,18 +135,24 @@ Header: x-api-key: <INTERNAL_API_KEY>
 
 - Job title matching is **case-insensitive and trimmed**.
 - Returns the **first recruiter added** to that job folder (the primary contact).
-- Stable response shape — do not change:
+- **Always responds `200`** with a `found` boolean. Stable response shape — do not change:
 
+Recruiter configured:
 ```json
 {
+  "found": true,
   "recruiterName": "Alice Recruiter",
   "recruiterEmail": "alice@company.com",
   "calendarLink": "https://calendar.google.com/calendar/appointments/..."
 }
 ```
 
-- `404 { "error": "..." }` when no recruiter is configured for that job title.
-- `400 { "error": "..." }` when the `job` query parameter is missing.
+No recruiter for that job title:
+```json
+{ "found": false }
+```
+
+- `400 { "error": "..." }` when the `job` query parameter is missing/empty.
 
 Recruiter management endpoints (used by the UI):
 
