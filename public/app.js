@@ -1,12 +1,16 @@
 const state = {
+  section: 'screening', // 'screening' or 'recruiters'
   jobs: [],
   selected: 'general', // 'general' or job.id
   view: 'criteria',    // 'criteria' or 'history'
   historyApp: null,    // selected application id in the history detail view
+  recruiterJobs: [],
+  recruiterSelected: null, // recruiter_job id, or null when nothing is selected
 };
 
 const contentEl = document.getElementById('content');
 const folderListEl = document.getElementById('folder-list');
+const recruiterFolderListEl = document.getElementById('recruiter-folder-list');
 const toastEl = document.getElementById('toast');
 
 function showToast(msg, isError = false) {
@@ -77,6 +81,10 @@ function setView(view) {
 }
 
 async function renderContent() {
+  if (state.section === 'recruiters') {
+    await renderRecruitersView();
+    return;
+  }
   if (state.view === 'history') {
     if (state.historyApp) {
       await renderHistoryDetail(state.historyApp);
@@ -286,6 +294,190 @@ document.getElementById('new-job-form').addEventListener('submit', async (e) => 
     input.value = '';
     await loadJobs();
     await selectFolder(job.id);
+    showToast('Folder created');
+  } catch (err) { showToast(err.message, true); }
+});
+
+// ================= SECTION SWITCHER =================
+
+function setSection(section) {
+  state.section = section;
+  document.getElementById('section-screening').classList.toggle('active', section === 'screening');
+  document.getElementById('section-recruiters').classList.toggle('active', section === 'recruiters');
+  document.getElementById('screening-section').style.display = section === 'screening' ? '' : 'none';
+  document.getElementById('recruiters-section').style.display = section === 'recruiters' ? '' : 'none';
+  renderContent();
+}
+
+document.getElementById('section-screening').addEventListener('click', () => setSection('screening'));
+document.getElementById('section-recruiters').addEventListener('click', async () => {
+  await loadRecruiterJobs();
+  setSection('recruiters');
+});
+
+// ================= RECRUITERS =================
+
+async function loadRecruiterJobs() {
+  state.recruiterJobs = await api('/recruiter-jobs');
+  if (state.recruiterSelected && !state.recruiterJobs.some(j => j.id === state.recruiterSelected)) {
+    state.recruiterSelected = null;
+  }
+  renderRecruiterFolderList();
+}
+
+function renderRecruiterFolderList() {
+  recruiterFolderListEl.innerHTML = '';
+  state.recruiterJobs.forEach(job => {
+    const btn = document.createElement('button');
+    btn.className = 'folder-tab' + (state.recruiterSelected === job.id ? ' active' : '');
+    btn.innerHTML = `<span>${escapeHtml(job.name)}</span>`;
+    btn.onclick = () => selectRecruiterFolder(job.id);
+    recruiterFolderListEl.appendChild(btn);
+  });
+}
+
+async function selectRecruiterFolder(id) {
+  state.recruiterSelected = id;
+  renderRecruiterFolderList();
+  await renderContent();
+}
+
+async function renderRecruitersView() {
+  if (!state.recruiterSelected) {
+    contentEl.innerHTML = `
+      <div class="folder-label">Recruiters</div>
+      <h1 class="folder-title">Recruiters</h1>
+      <div class="folder-meta">One folder per job title. Recruiters add their contact info and a Google Calendar booking link that an automation reads to schedule candidates.</div>
+      <div class="empty-state">${state.recruiterJobs.length ? 'Select a job folder on the left, or create a new one.' : 'No job folders yet. Create one with “+ New folder”.'}</div>`;
+    return;
+  }
+
+  const job = state.recruiterJobs.find(j => j.id === state.recruiterSelected);
+  if (!job) { state.recruiterSelected = null; return renderRecruitersView(); }
+
+  contentEl.innerHTML = `
+    <div class="folder-label">Recruiters folder</div>
+    <h1 class="folder-title">${escapeHtml(job.name)}</h1>
+    <div class="folder-meta">Contacts an automation can fetch by job title via <span class="mono">GET /api/recruiters?job=${escapeHtml(encodeURIComponent(job.name))}</span>. The first recruiter added is the primary one returned.</div>
+    <div class="section" id="recruiters-section-body"></div>`;
+
+  const recruiters = await api(`/recruiter-jobs/${job.id}/recruiters`);
+  renderRecruiterList(document.getElementById('recruiters-section-body'), recruiters, job.id);
+}
+
+function isEmail(s) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim()); }
+function isUrl(s) {
+  try { const u = new URL(s.trim()); return u.protocol === 'http:' || u.protocol === 'https:'; }
+  catch { return false; }
+}
+
+function renderRecruiterList(container, recruiters, jobId) {
+  container.innerHTML = `
+    <div class="section-heading">
+      <h2>Recruiters</h2>
+      <span class="weight-total">${recruiters.length} ${recruiters.length === 1 ? 'recruiter' : 'recruiters'}</span>
+    </div>
+    <div class="section-hint">Add your name, email, and a Google Calendar booking link you set up yourself. Notes are optional. The first entry is the primary contact returned to the automation.</div>
+    <div class="card">
+      <div class="recruiter-row" style="border-bottom:1px solid var(--line);color:var(--text-muted);font-size:11px;text-transform:uppercase;letter-spacing:0.06em;">
+        <div>Name</div><div>Email</div><div>Calendar link</div><div>Notes</div><div></div>
+      </div>
+      <div id="recruiter-rows"></div>
+      <form class="add-recruiter-form" id="add-recruiter-form">
+        <input type="text" name="name" placeholder="Name" required />
+        <input type="email" name="email" placeholder="you@company.com" required />
+        <input type="url" name="calendar_link" placeholder="https://calendar.google.com/…" required />
+        <input type="text" name="notes" placeholder="Notes (optional)" />
+        <button type="submit" title="Add recruiter">+</button>
+      </form>
+    </div>`;
+
+  const rowsEl = container.querySelector('#recruiter-rows');
+  if (recruiters.length === 0) {
+    rowsEl.innerHTML = `<div class="empty-state">No recruiters in this folder yet.</div>`;
+  } else {
+    recruiters.forEach(r => rowsEl.appendChild(buildRecruiterRow(r)));
+  }
+
+  container.querySelector('#add-recruiter-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const name = form.name.value.trim();
+    const email = form.email.value.trim();
+    const calendar_link = form.calendar_link.value.trim();
+    const notes = form.notes.value.trim();
+    if (!name) return;
+    if (!isEmail(email)) return showToast('Please enter a valid email', true);
+    if (!isUrl(calendar_link)) return showToast('Calendar link must be a valid URL', true);
+    try {
+      await api(`/recruiter-jobs/${jobId}/recruiters`, {
+        method: 'POST',
+        body: JSON.stringify({ name, email, calendar_link, notes }),
+      });
+      showToast('Recruiter added');
+      await renderContent();
+    } catch (err) { showToast(err.message, true); }
+  });
+}
+
+function buildRecruiterRow(r) {
+  const row = document.createElement('div');
+  row.className = 'recruiter-row';
+  row.innerHTML = `
+    <input class="r-name" value="${escapeHtml(r.name)}" />
+    <input class="r-email mono-field" type="email" value="${escapeHtml(r.email)}" />
+    <input class="r-cal mono-field" type="url" value="${escapeHtml(r.calendar_link)}" />
+    <input class="r-notes" value="${escapeHtml(r.notes || '')}" placeholder="—" />
+    <button class="row-delete" title="Delete">×</button>
+  `;
+
+  const nameInput = row.querySelector('.r-name');
+  const emailInput = row.querySelector('.r-email');
+  const calInput = row.querySelector('.r-cal');
+  const notesInput = row.querySelector('.r-notes');
+  const deleteBtn = row.querySelector('.row-delete');
+
+  async function save(patch) {
+    try {
+      await api(`/recruiters/${r.id}`, { method: 'PUT', body: JSON.stringify(patch) });
+      showToast('Recruiter updated');
+    } catch (err) { showToast(err.message, true); }
+  }
+
+  nameInput.addEventListener('change', () => {
+    if (!nameInput.value.trim()) { nameInput.value = r.name; return showToast('Name cannot be empty', true); }
+    save({ name: nameInput.value.trim() });
+  });
+  emailInput.addEventListener('change', () => {
+    if (!isEmail(emailInput.value)) { emailInput.value = r.email; return showToast('Please enter a valid email', true); }
+    save({ email: emailInput.value.trim() });
+  });
+  calInput.addEventListener('change', () => {
+    if (!isUrl(calInput.value)) { calInput.value = r.calendar_link; return showToast('Calendar link must be a valid URL', true); }
+    save({ calendar_link: calInput.value.trim() });
+  });
+  notesInput.addEventListener('change', () => save({ notes: notesInput.value.trim() }));
+  deleteBtn.addEventListener('click', async () => {
+    try {
+      await api(`/recruiters/${r.id}`, { method: 'DELETE' });
+      showToast('Recruiter deleted');
+      await renderContent();
+    } catch (err) { showToast(err.message, true); }
+  });
+
+  return row;
+}
+
+document.getElementById('new-recruiter-job-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('new-recruiter-job-name');
+  const name = input.value.trim();
+  if (!name) return;
+  try {
+    const job = await api('/recruiter-jobs', { method: 'POST', body: JSON.stringify({ name }) });
+    input.value = '';
+    await loadRecruiterJobs();
+    await selectRecruiterFolder(job.id);
     showToast('Folder created');
   } catch (err) { showToast(err.message, true); }
 });

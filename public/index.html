@@ -21,17 +21,34 @@
       </div>
     </div>
 
-    <nav class="rail-nav">
-      <button id="nav-criteria" class="nav-item active" type="button">Criteria</button>
-      <button id="nav-history" class="nav-item" type="button">History</button>
+    <nav class="section-nav">
+      <button id="section-screening" class="section-item active" type="button">Screening Criteria</button>
+      <button id="section-recruiters" class="section-item" type="button">Recruiters</button>
     </nav>
 
-    <div id="criteria-nav">
-      <div class="rail-section-label">Folders</div>
-      <div id="folder-list" class="folder-list"></div>
+    <div id="screening-section" class="section-panel">
+      <nav class="rail-nav">
+        <button id="nav-criteria" class="nav-item active" type="button">Criteria</button>
+        <button id="nav-history" class="nav-item" type="button">History</button>
+      </nav>
 
-      <form id="new-job-form" class="new-job-form">
-        <input id="new-job-name" type="text" placeholder="Job title…" autocomplete="off" />
+      <div id="criteria-nav">
+        <div class="rail-section-label">Folders</div>
+        <div id="folder-list" class="folder-list"></div>
+
+        <form id="new-job-form" class="new-job-form">
+          <input id="new-job-name" type="text" placeholder="Job title…" autocomplete="off" />
+          <button type="submit">+ New folder</button>
+        </form>
+      </div>
+    </div>
+
+    <div id="recruiters-section" class="section-panel" style="display:none">
+      <div class="rail-section-label">Folders</div>
+      <div id="recruiter-folder-list" class="folder-list"></div>
+
+      <form id="new-recruiter-job-form" class="new-job-form">
+        <input id="new-recruiter-job-name" type="text" placeholder="Job title…" autocomplete="off" />
         <button type="submit">+ New folder</button>
       </form>
     </div>

@@ -6,7 +6,7 @@ Internal app to define, for each job, which parameters are evaluated and with wh
 
 ```
 server.js              -> Express server
-db/index.js            -> SQLite schema (jobs, parameters, killer_questions, score_log)
+db/index.js            -> SQLite schema (jobs, parameters, killer_questions, score_log, recruiter_jobs, recruiters)
 routes/api.js          -> app endpoints
 routes/ashby.js         -> Ashby API client
 public/                -> UI (HTML/CSS/JS, no build step)
@@ -116,6 +116,50 @@ GET /api/applications/:applicationId/history  -> full detail for one application
 
 Killer questions are still entered exactly where they were before; the interview
 phase reuses them automatically (each carries an optional `weight`, default 1).
+
+## Recruiters section
+
+A second top-level section in the UI (next to **Screening Criteria**), styled the
+same way. It has one folder per job title (same "+ New folder" pattern), and each
+folder holds a list of recruiter contacts — name, email (validated), a Google
+Calendar booking link (validated URL, the recruiter creates it themselves and
+pastes it here), and optional notes. Entries can be edited and deleted inline.
+
+An external automation (polled ~every 15 min) fetches the **primary** recruiter
+for a job by title:
+
+```
+GET https://YOUR-APP.up.railway.app/api/recruiters?job={job_title}
+Header: x-api-key: <INTERNAL_API_KEY>
+```
+
+- Job title matching is **case-insensitive and trimmed**.
+- Returns the **first recruiter added** to that job folder (the primary contact).
+- Stable response shape — do not change:
+
+```json
+{
+  "recruiterName": "Alice Recruiter",
+  "recruiterEmail": "alice@company.com",
+  "calendarLink": "https://calendar.google.com/calendar/appointments/..."
+}
+```
+
+- `404 { "error": "..." }` when no recruiter is configured for that job title.
+- `400 { "error": "..." }` when the `job` query parameter is missing.
+
+Recruiter management endpoints (used by the UI):
+
+```
+GET    /api/recruiter-jobs                            -> folders (one per job title)
+POST   /api/recruiter-jobs                            -> { name }
+PUT    /api/recruiter-jobs/:id                        -> { name }
+DELETE /api/recruiter-jobs/:id
+GET    /api/recruiter-jobs/:jobId/recruiters          -> list for a folder
+POST   /api/recruiter-jobs/:jobId/recruiters          -> { name, email, calendar_link, notes? }
+PUT    /api/recruiters/:id                            -> partial update (validated)
+DELETE /api/recruiters/:id
+```
 
 ## Notes
 

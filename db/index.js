@@ -87,6 +87,30 @@ CREATE INDEX IF NOT EXISTS idx_interview_results_application
   ON interview_results (application_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_score_log_application
   ON score_log (ashby_application_id, created_at DESC);
+
+-- ---------- RECRUITERS ----------
+-- The Recruiters section mirrors the Screening Criteria folder pattern: one
+-- folder per job title (recruiter_jobs), each holding a list of recruiter
+-- contacts. An external automation reads the primary recruiter per job title
+-- via GET /api/recruiters?job=... (matched case-insensitively on name).
+CREATE TABLE IF NOT EXISTS recruiter_jobs (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS recruiters (
+  id TEXT PRIMARY KEY,
+  recruiter_job_id TEXT NOT NULL REFERENCES recruiter_jobs(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL,
+  calendar_link TEXT NOT NULL,
+  notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_recruiters_job
+  ON recruiters (recruiter_job_id, created_at);
 `);
 
 // ---------- Lightweight migrations for existing databases ----------

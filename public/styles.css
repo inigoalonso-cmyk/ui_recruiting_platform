@@ -522,6 +522,111 @@ body {
   min-height: 0;
 }
 
+/* ---------- Section switcher (Screening Criteria / Recruiters) ---------- */
+.section-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.section-item {
+  background: transparent;
+  border: none;
+  border-left: 2px solid transparent;
+  color: var(--text-muted);
+  font-family: var(--font-body);
+  font-size: 12.5px;
+  text-align: left;
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease;
+}
+.section-item:hover { color: var(--text); }
+.section-item.active {
+  color: var(--text);
+  border-left-color: var(--amber);
+}
+
+.section-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---------- Recruiters ---------- */
+.recruiter-row,
+.add-recruiter-form {
+  display: grid;
+  grid-template-columns: 1fr 1.2fr 1.4fr 1fr 32px;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--line);
+}
+.recruiter-row:last-child { border-bottom: none; }
+
+.add-recruiter-form {
+  background: var(--bg);
+  border-bottom: none;
+}
+
+.recruiter-row input {
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  padding: 4px 0;
+  width: 100%;
+}
+.recruiter-row input.mono-field {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.recruiter-row input:focus {
+  outline: none;
+  border-bottom-color: var(--amber-dim);
+  color: var(--text);
+}
+
+.add-recruiter-form input {
+  background: var(--panel-raised);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 7px 10px;
+  border-radius: var(--radius);
+  font-family: var(--font-body);
+  font-size: 13px;
+  width: 100%;
+}
+.add-recruiter-form input:focus { outline: none; border-color: var(--amber-dim); }
+
+.add-recruiter-form button {
+  background: var(--amber);
+  border: none;
+  color: #1b1108;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 600;
+}
+.add-recruiter-form button:hover { background: #e6a15e; }
+
+.cal-link {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--blue);
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cal-link:hover { text-decoration: underline; }
+
 /* ---------- Shared bits ---------- */
 .mono { font-family: var(--font-mono); font-size: 12px; }
 .muted { color: var(--text-muted); }
@@ -737,6 +842,7 @@ body {
   .rail { border-right: none; border-bottom: 1px solid var(--line); }
   .main { padding: 24px; }
   .param-row, .add-row-form { grid-template-columns: 1fr; gap: 6px; }
+  .recruiter-row, .add-recruiter-form { grid-template-columns: 1fr; gap: 6px; }
   .history-row { grid-template-columns: 1fr 1fr; }
   .meta-grid { grid-template-columns: 1fr; }
 }

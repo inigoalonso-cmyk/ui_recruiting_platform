@@ -500,4 +500,125 @@ router.get('/applications/:applicationId/history', (req, res) => {
   });
 });
 
+// ================= RECRUITERS =================
+// Mirrors the Screening Criteria folder pattern: recruiter_jobs are folders
+// (one per job title) and recruiters are the contact entries inside them.
+// Persisted in the same SQLite DB as jobs/parameters (see db/index.js).
+
+function isValidEmail(s) {
+  return typeof s === 'string' && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.trim());
+}
+function isValidUrl(s) {
+  if (typeof s !== 'string') return false;
+  try {
+    const u = new URL(s.trim());
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+// ---------- Recruiter folders (one per job title) ----------
+router.get('/recruiter-jobs', (req, res) => {
+  const rows = db.prepare('SELECT * FROM recruiter_jobs ORDER BY created_at DESC').all();
+  res.json(rows);
+});
+
+router.post('/recruiter-jobs', (req, res) => {
+  const { name } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
+  const id = uuid();
+  db.prepare('INSERT INTO recruiter_jobs (id, name) VALUES (?, ?)').run(id, name.trim());
+  res.status(201).json(db.prepare('SELECT * FROM recruiter_jobs WHERE id = ?').get(id));
+});
+
+router.put('/recruiter-jobs/:id', (req, res) => {
+  const { name } = req.body;
+  const job = db.prepare('SELECT * FROM recruiter_jobs WHERE id = ?').get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'recruiter job not found' });
+  if (name !== undefined && (!name || !name.trim())) return res.status(400).json({ error: 'name cannot be empty' });
+  db.prepare('UPDATE recruiter_jobs SET name = COALESCE(?, name) WHERE id = ?')
+    .run(name ? name.trim() : null, req.params.id);
+  res.json(db.prepare('SELECT * FROM recruiter_jobs WHERE id = ?').get(req.params.id));
+});
+
+router.delete('/recruiter-jobs/:id', (req, res) => {
+  db.prepare('DELETE FROM recruiter_jobs WHERE id = ?').run(req.params.id);
+  res.status(204).end();
+});
+
+// ---------- Recruiter entries (per folder) ----------
+router.get('/recruiter-jobs/:jobId/recruiters', (req, res) => {
+  const rows = db.prepare('SELECT * FROM recruiters WHERE recruiter_job_id = ? ORDER BY created_at').all(req.params.jobId);
+  res.json(rows);
+});
+
+router.post('/recruiter-jobs/:jobId/recruiters', (req, res) => {
+  const job = db.prepare('SELECT * FROM recruiter_jobs WHERE id = ?').get(req.params.jobId);
+  if (!job) return res.status(404).json({ error: 'recruiter job not found' });
+  const { name, email, calendar_link, notes } = req.body;
+  if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
+  if (!isValidEmail(email)) return res.status(400).json({ error: 'a valid email is required' });
+  if (!isValidUrl(calendar_link)) return res.status(400).json({ error: 'calendar_link must be a valid URL' });
+  const id = uuid();
+  db.prepare('INSERT INTO recruiters (id, recruiter_job_id, name, email, calendar_link, notes) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, req.params.jobId, name.trim(), email.trim(), calendar_link.trim(), (notes || '').trim() || null);
+  res.status(201).json(db.prepare('SELECT * FROM recruiters WHERE id = ?').get(id));
+});
+
+router.put('/recruiters/:id', (req, res) => {
+  const existing = db.prepare('SELECT * FROM recruiters WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'recruiter not found' });
+  const { name, email, calendar_link, notes } = req.body;
+  if (name !== undefined && (!name || !name.trim())) return res.status(400).json({ error: 'name cannot be empty' });
+  if (email !== undefined && !isValidEmail(email)) return res.status(400).json({ error: 'a valid email is required' });
+  if (calendar_link !== undefined && !isValidUrl(calendar_link)) return res.status(400).json({ error: 'calendar_link must be a valid URL' });
+  db.prepare(`
+    UPDATE recruiters SET
+      name = COALESCE(?, name),
+      email = COALESCE(?, email),
+      calendar_link = COALESCE(?, calendar_link),
+      notes = ?
+    WHERE id = ?
+  `).run(
+    name ? name.trim() : null,
+    email ? email.trim() : null,
+    calendar_link ? calendar_link.trim() : null,
+    notes !== undefined ? ((notes || '').trim() || null) : existing.notes,
+    req.params.id,
+  );
+  res.json(db.prepare('SELECT * FROM recruiters WHERE id = ?').get(req.params.id));
+});
+
+router.delete('/recruiters/:id', (req, res) => {
+  db.prepare('DELETE FROM recruiters WHERE id = ?').run(req.params.id);
+  res.status(204).end();
+});
+
+// ---------- EXTERNAL: primary recruiter contact per job title ----------
+// GET /api/recruiters?job={job_title}
+// Consumed by an external automation (polled ~every 15 min). Returns the
+// primary (first-added) recruiter for the job. Job title matching is
+// case-insensitive and trimmed. Response shape is stable — do not change:
+//   { "recruiterName": string, "recruiterEmail": string, "calendarLink": string }
+// 404 { error } when no recruiter is configured for the given job title.
+router.get('/recruiters', requireInternalKey, (req, res) => {
+  const job = (req.query.job || '').trim();
+  if (!job) return res.status(400).json({ error: 'job query parameter is required' });
+
+  const folder = db.prepare('SELECT id FROM recruiter_jobs WHERE lower(trim(name)) = lower(?)').get(job);
+  if (!folder) return res.status(404).json({ error: `no recruiter configured for job "${job}"` });
+
+  const recruiter = db.prepare(
+    'SELECT name, email, calendar_link FROM recruiters WHERE recruiter_job_id = ? ORDER BY created_at ASC LIMIT 1'
+  ).get(folder.id);
+  if (!recruiter) return res.status(404).json({ error: `no recruiter configured for job "${job}"` });
+
+  res.json({
+    recruiterName: recruiter.name,
+    recruiterEmail: recruiter.email,
+    calendarLink: recruiter.calendar_link,
+  });
+});
+
 module.exports = router;
