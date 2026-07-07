@@ -13,6 +13,8 @@ const state = {
   renamingJobInfoFolderId: null, // job folder being renamed from Job Info
   editingFactId: null, // job-info fact currently being edited inline
   expandedFacts: new Set(), // fact ids currently expanded (client-side only)
+  historyView: 'timeline', // 'timeline' or 'analytics' sub-view of History
+  analyticsJob: '', // '' = all jobs, else a job id, for the analytics funnel
 };
 
 // Pass/fail cutoff, read from settings (falls back to 8 until loaded).
@@ -31,6 +33,28 @@ function showToast(msg, isError = false) {
   toastEl.textContent = msg;
   toastEl.className = 'toast show' + (isError ? ' error' : '');
   setTimeout(() => { toastEl.className = 'toast'; }, 2600);
+}
+
+// Copy text to the clipboard, with a fallback for non-secure contexts.
+async function copyText(text) {
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch { /* fall through to the textarea fallback */ }
+  try {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    return ok;
+  } catch { return false; }
 }
 
 async function api(path, options = {}) {
@@ -200,6 +224,8 @@ async function renderContent() {
   if (state.view === 'history') {
     if (state.historyApp) {
       await renderHistoryDetail(state.historyApp);
+    } else if (state.historyView === 'analytics') {
+      await renderAnalytics();
     } else {
       await renderHistoryList();
     }
@@ -979,12 +1005,35 @@ function scoreClass(score) {
   return score >= passThreshold() ? 'pass' : 'fail';
 }
 
+// Segmented Timeline / Analytics control shown atop both History sub-views.
+function historyToggleHtml(active) {
+  return `
+    <div class="seg-toggle" id="history-toggle">
+      <button type="button" class="seg-item ${active === 'timeline' ? 'active' : ''}" data-view="timeline">Timeline</button>
+      <button type="button" class="seg-item ${active === 'analytics' ? 'active' : ''}" data-view="analytics">Analytics</button>
+    </div>`;
+}
+
+function wireHistoryToggle() {
+  const el = document.getElementById('history-toggle');
+  if (!el) return;
+  el.querySelectorAll('.seg-item').forEach((b) => b.addEventListener('click', () => {
+    const view = b.dataset.view;
+    if (view === state.historyView) return;
+    state.historyView = view;
+    state.historyApp = null;
+    renderContent();
+  }));
+}
+
 async function renderHistoryList() {
   contentEl.innerHTML = `
     <div class="folder-label">Evaluation history</div>
     <h1 class="folder-title">History</h1>
     <div class="folder-meta">Every application that has been evaluated across Prescreen and Agent Interview.</div>
+    ${historyToggleHtml('timeline')}
     <div class="section" id="history-section"><div class="empty-state">Loading…</div></div>`;
+  wireHistoryToggle();
 
   const section = document.getElementById('history-section');
   let rows;
@@ -1027,6 +1076,106 @@ async function renderHistoryList() {
       state.historyApp = el.dataset.app;
       renderContent();
     });
+  });
+}
+
+// ---------- Analytics sub-view (aggregate funnel) ----------
+async function renderAnalytics() {
+  contentEl.innerHTML = `
+    <div class="folder-label">Evaluation history</div>
+    <h1 class="folder-title">History</h1>
+    <div class="folder-meta">Aggregate funnel across all evaluated candidates. Later Ashby stages (Recruiter Interview / Hired / Archived) live in Ashby and aren't tracked here.</div>
+    ${historyToggleHtml('analytics')}
+    <div class="analytics-controls">
+      <label class="analytics-filter">
+        <span class="setting-desc">Job</span>
+        <select id="analytics-job"><option value="">All jobs</option></select>
+      </label>
+    </div>
+    <div class="section" id="analytics-section"><div class="empty-state">Loading…</div></div>`;
+  wireHistoryToggle();
+
+  // Populate the job filter from the shared jobs list.
+  const sel = document.getElementById('analytics-job');
+  state.jobs.forEach((j) => {
+    const o = document.createElement('option');
+    o.value = j.id; o.textContent = j.name;
+    if (j.id === state.analyticsJob) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.addEventListener('change', () => { state.analyticsJob = sel.value; renderContent(); });
+
+  const section = document.getElementById('analytics-section');
+  let data;
+  try {
+    data = await api(`/analytics/funnel${state.analyticsJob ? `?job=${encodeURIComponent(state.analyticsJob)}` : ''}`);
+  } catch (err) {
+    section.innerHTML = `<div class="empty-state">Could not load analytics: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  const applied = data.stages[0] ? data.stages[0].count : 0;
+  const fmtPct = (v) => (v == null ? '—' : `${v}%`);
+  const fmtNum = (v) => (v == null ? '—' : v);
+
+  const funnelHtml = data.stages.map((st, i) => {
+    const pct = applied > 0 ? Math.round((st.count / applied) * 100) : 0;
+    const conv = i === 0 ? '' : `<span class="funnel-conv">${fmtPct(st.conversion)} of previous</span>`;
+    return `
+      <div class="funnel-stage">
+        <div class="funnel-top">
+          <span class="funnel-label">${escapeHtml(st.label)}</span>
+          <span class="funnel-count">${st.count}${conv}</span>
+        </div>
+        <div class="funnel-bar"><div class="funnel-fill" style="width:${pct}%"></div></div>
+      </div>`;
+  }).join('');
+
+  const m = data.metrics || {};
+  const metricTiles = [
+    { label: 'Avg Prescreen score', value: m.avg_prescreen_score == null ? '—' : `${m.avg_prescreen_score} / 10` },
+    { label: 'Avg Interview score', value: m.avg_interview_score == null ? '—' : `${m.avg_interview_score} / 10` },
+    { label: 'Avg call attempts', value: fmtNum(m.avg_attempts) },
+    { label: 'Prescreen pass rate', value: fmtPct(m.prescreen_pass_rate) },
+    { label: 'Interview pass rate', value: fmtPct(m.interview_pass_rate) },
+  ].map((t) => `<div class="metric-tile"><div class="metric-value">${escapeHtml(String(t.value))}</div><div class="metric-label">${escapeHtml(t.label)}</div></div>`).join('');
+
+  let byJobHtml = '';
+  if (data.by_job && data.by_job.length) {
+    const rows = data.by_job.map((j) => `
+      <div class="history-row">
+        <div>${escapeHtml(j.job_name)}</div>
+        <div class="mono">${j.applied}</div>
+        <div class="mono">${fmtPct(j.prescreen_pass_rate)}</div>
+        <div class="mono">${fmtPct(j.interview_pass_rate)}</div>
+      </div>`).join('');
+    byJobHtml = `
+      <div class="section">
+        <div class="section-heading"><h2>Pass rate by job</h2></div>
+        <div class="card">
+          <div class="history-row history-head byjob-row"><div>Job</div><div>Applied</div><div>Prescreen pass</div><div>Interview pass</div></div>
+          <div class="byjob-rows">${rows}</div>
+        </div>
+      </div>`;
+  }
+
+  section.innerHTML = `
+    <div class="section">
+      <div class="section-heading">
+        <h2>Funnel${data.job ? ` · ${escapeHtml(data.job.name)}` : ''}</h2>
+        <span class="weight-total">${applied} candidate${applied === 1 ? '' : 's'}</span>
+      </div>
+      <div class="card funnel-card">${data.stages.length ? funnelHtml : '<div class="empty-state">No data yet.</div>'}</div>
+    </div>
+    <div class="section">
+      <div class="section-heading"><h2>Metrics</h2></div>
+      <div class="metric-grid">${metricTiles}</div>
+    </div>
+    ${byJobHtml}`;
+
+  // .byjob-row grid columns match the 4-column layout.
+  section.querySelectorAll('.byjob-row, .byjob-rows .history-row').forEach((r) => {
+    r.style.gridTemplateColumns = '2fr 1fr 1.2fr 1.2fr';
   });
 }
 
@@ -1228,7 +1377,7 @@ async function renderSettingsView() {
     return;
   }
 
-  const key = s.internal_api_key || {};
+  const secrets = s.secrets || [];
   const ashby = s.ashby || {};
 
   contentEl.innerHTML = `
@@ -1318,21 +1467,23 @@ async function renderSettingsView() {
     </div>
 
     <div class="section">
-      <div class="section-heading"><h2>API access</h2></div>
-      <div class="section-hint">The internal key HappyRobot workflow nodes send as <span class="mono">x-api-key</span>. Read-only — the full value never leaves the server; only a masked form is shown for verification.</div>
+      <div class="section-heading"><h2>API keys &amp; secrets</h2></div>
+      <div class="section-hint">Read-only. Masked by default — the raw value is fetched only when you click <span class="mono">Reveal</span> or <span class="mono">Copy</span>, never in the page's initial load.</div>
       <div class="card">
-        <div class="setting-row">
-          <div class="setting-label">
-            <div class="setting-title">Internal API key</div>
-            <div class="setting-desc">${key.configured ? 'Configured on the server.' : 'Not configured — endpoints are currently unauthenticated (dev mode).'}</div>
-          </div>
-          <div class="setting-control">
-            ${key.configured
-              ? `<span class="settings-value mono" id="key-value" data-masked="${escapeHtml(key.masked || '')}">${'•'.repeat((key.masked || '').length || 12)}</span>
-                 <button type="button" class="reveal-btn" id="key-reveal">Reveal</button>`
-              : `<span class="pill muted">Not configured</span>`}
-          </div>
-        </div>
+        ${secrets.map((sec) => `
+          <div class="setting-row">
+            <div class="setting-label">
+              <div class="setting-title">${escapeHtml(sec.label)}</div>
+              <div class="setting-desc">${escapeHtml(sec.hint || '')}</div>
+            </div>
+            <div class="setting-control">
+              ${sec.configured
+                ? `<span class="settings-value mono secret-value" data-key="${escapeHtml(sec.key)}" data-masked="${escapeHtml(sec.masked || '')}">${escapeHtml(sec.masked || '')}</span>
+                   <button type="button" class="reveal-btn secret-reveal" data-key="${escapeHtml(sec.key)}">Reveal</button>
+                   <button type="button" class="reveal-btn secret-copy" data-key="${escapeHtml(sec.key)}">Copy</button>`
+                : `<span class="pill muted">Not configured</span>`}
+            </div>
+          </div>`).join('')}
       </div>
     </div>
   `;
@@ -1347,15 +1498,46 @@ async function renderSettingsView() {
     saveSetting({ call_recording_enabled: e.target.checked }, `Call recording ${e.target.checked ? 'enabled' : 'disabled'}`);
   });
 
-  const revealBtn = document.getElementById('key-reveal');
-  if (revealBtn) {
-    revealBtn.addEventListener('click', () => {
-      const el = document.getElementById('key-value');
-      const masked = el.dataset.masked || '';
-      if (!el.dataset.shown) { el.textContent = masked; el.dataset.shown = '1'; revealBtn.textContent = 'Hide'; }
-      else { el.textContent = '•'.repeat(masked.length || 12); delete el.dataset.shown; revealBtn.textContent = 'Reveal'; }
+  // Reveal/hide each secret. Reveal fetches the raw value on demand (it is not
+  // in the initial /settings payload); Hide restores the masked form.
+  document.querySelectorAll('.secret-reveal').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const key = btn.dataset.key;
+      const valEl = document.querySelector(`.secret-value[data-key="${key}"]`);
+      if (!valEl) return;
+      if (valEl.dataset.shown) {
+        valEl.textContent = valEl.dataset.masked || '';
+        delete valEl.dataset.shown;
+        delete valEl.dataset.raw;
+        btn.textContent = 'Reveal';
+        return;
+      }
+      btn.disabled = true;
+      try {
+        const r = await api(`/settings/secrets/${key}`);
+        valEl.textContent = r.value || '(empty)';
+        valEl.dataset.raw = r.value || '';
+        valEl.dataset.shown = '1';
+        btn.textContent = 'Hide';
+      } catch (err) { showToast(err.message, true); }
+      finally { btn.disabled = false; }
     });
-  }
+  });
+
+  // Copy the raw secret to the clipboard (fetches it if not already revealed).
+  document.querySelectorAll('.secret-copy').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const key = btn.dataset.key;
+      const valEl = document.querySelector(`.secret-value[data-key="${key}"]`);
+      try {
+        let raw = valEl && valEl.dataset.raw;
+        if (!raw) { const r = await api(`/settings/secrets/${key}`); raw = r.value || ''; }
+        if (!raw) { showToast('Nothing to copy', true); return; }
+        const ok = await copyText(raw);
+        showToast(ok ? 'Copied to clipboard' : 'Copy failed', !ok);
+      } catch (err) { showToast(err.message, true); }
+    });
+  });
 
   // Live Ashby connectivity check (async so the page renders instantly).
   const statusEl = document.getElementById('ashby-status');

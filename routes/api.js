@@ -660,6 +660,101 @@ router.get('/applications/:applicationId/history', (req, res) => {
   });
 });
 
+// ================= ANALYTICS (recruiter-facing, read-only) =================
+// GET /analytics/funnel?job=<jobId>  (omit job for all jobs)
+// Aggregates the funnel + secondary metrics from data this app already stores:
+// prescreen results (score_log) and Agent Interview results (interview_results /
+// interview_state). Later Ashby stages (Recruiter Interview / Hired / Archived)
+// are not synced back into this DB, so they're not part of the funnel.
+router.get('/analytics/funnel', (req, res) => {
+  const jobFilter = (req.query.job || '').trim() || null;
+  const threshold = getPassThreshold();
+
+  // Latest prescreen per application.
+  const prescreens = db.prepare(`
+    SELECT ashby_application_id AS app, job_id, score, created_at
+    FROM score_log WHERE ashby_application_id IS NOT NULL
+    ORDER BY created_at DESC
+  `).all();
+  // Latest interview per application.
+  const interviews = db.prepare(`
+    SELECT application_id AS app, job_id, score, passed, created_at
+    FROM interview_results ORDER BY created_at DESC
+  `).all();
+  const states = db.prepare('SELECT application_id AS app, job_id, attempts FROM interview_state').all();
+
+  // Build one aggregate row per application (latest values win).
+  const apps = new Map();
+  const ensure = (app) => {
+    if (!apps.has(app)) apps.set(app, { job_id: null, prescreenScore: null, reached: false, interviewPassed: null, interviewScore: null, attempts: null });
+    return apps.get(app);
+  };
+  for (const p of prescreens) { const e = ensure(p.app); if (e.prescreenScore === null) e.prescreenScore = p.score; e.job_id = e.job_id || p.job_id; }
+  for (const iv of interviews) { const e = ensure(iv.app); e.reached = true; if (e.interviewPassed === null) { e.interviewPassed = !!iv.passed; e.interviewScore = iv.score; } e.job_id = e.job_id || iv.job_id; }
+  for (const s of states) { const e = ensure(s.app); e.reached = true; if (e.attempts === null) e.attempts = s.attempts; e.job_id = e.job_id || s.job_id; }
+
+  const all = [...apps.values()];
+  const rows = jobFilter ? all.filter((a) => a.job_id === jobFilter) : all;
+
+  const avg = (nums) => (nums.length ? Math.round((nums.reduce((s, n) => s + n, 0) / nums.length) * 100) / 100 : null);
+  const rate = (num, den) => (den > 0 ? Math.round((num / den) * 1000) / 10 : null); // one decimal %
+
+  function funnelFor(list) {
+    const applied = list.length;
+    const withPrescreen = list.filter((a) => a.prescreenScore !== null);
+    const prescreenPassed = withPrescreen.filter((a) => a.prescreenScore >= threshold).length;
+    const reached = list.filter((a) => a.reached).length;
+    const interviewPassed = list.filter((a) => a.interviewPassed === true).length;
+    return {
+      stages: [
+        { key: 'applied', label: 'Applied', count: applied },
+        { key: 'prescreen_passed', label: `Prescreen passed (≥ ${threshold})`, count: prescreenPassed, conversion: rate(prescreenPassed, applied) },
+        { key: 'interview_reached', label: 'Agent Interview reached', count: reached, conversion: rate(reached, prescreenPassed) },
+        { key: 'interview_passed', label: 'Agent Interview passed', count: interviewPassed, conversion: rate(interviewPassed, reached) },
+      ],
+      metrics: {
+        avg_prescreen_score: avg(withPrescreen.map((a) => a.prescreenScore)),
+        avg_interview_score: avg(list.filter((a) => a.interviewScore !== null).map((a) => a.interviewScore)),
+        avg_attempts: avg(list.filter((a) => a.attempts !== null).map((a) => a.attempts)),
+        prescreen_pass_rate: rate(prescreenPassed, withPrescreen.length),
+        interview_pass_rate: rate(interviewPassed, reached),
+      },
+    };
+  }
+
+  const jobName = Object.fromEntries(db.prepare('SELECT id, name FROM jobs').all().map((j) => [j.id, j.name]));
+  const main = funnelFor(rows);
+
+  // Per-job pass-rate breakdown (only for the all-jobs view).
+  let byJob = null;
+  if (!jobFilter) {
+    const groups = new Map();
+    for (const a of all) {
+      const key = a.job_id || '__none__';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(a);
+    }
+    byJob = [...groups.entries()].map(([jid, list]) => {
+      const f = funnelFor(list);
+      return {
+        job_id: jid === '__none__' ? null : jid,
+        job_name: jid === '__none__' ? '(no job)' : (jobName[jid] || '(unknown)'),
+        applied: list.length,
+        prescreen_pass_rate: f.metrics.prescreen_pass_rate,
+        interview_pass_rate: f.metrics.interview_pass_rate,
+      };
+    }).sort((a, b) => b.applied - a.applied);
+  }
+
+  res.json({
+    job: jobFilter ? { id: jobFilter, name: jobName[jobFilter] || '(unknown)' } : null,
+    threshold,
+    stages: main.stages,
+    metrics: main.metrics,
+    by_job: byJob,
+  });
+});
+
 // ================= RECRUITERS =================
 // Mirrors the Screening Criteria folder pattern: recruiter_jobs are folders
 // (one per job title) and recruiters are the contact entries inside them.
@@ -794,9 +889,29 @@ function maskSecret(value) {
   return `${value.slice(0, 4)}${'•'.repeat(Math.max(4, value.length - 8))}${value.slice(-4)}`;
 }
 
-// GET /settings — current values + integration status (no live network calls).
+// The only real credentials the app reads (audited from the codebase): the
+// x-api-key HappyRobot workflows must send, and the Ashby API key for the app's
+// own Ashby integration. Everything else in env is non-secret config (field
+// ids, object types, stage names). The raw value is NEVER included in the
+// /settings payload — only a masked form; the raw is fetched on explicit reveal.
+const SECRETS = [
+  {
+    key: 'internal_api_key',
+    label: 'Internal API key',
+    hint: 'Sent by HappyRobot workflow nodes as the x-api-key header on Prescreen / Agent Interview / Job Info calls.',
+    env: 'INTERNAL_API_KEY',
+  },
+  {
+    key: 'ashby_api_key',
+    label: 'Ashby API key',
+    hint: "Used for the app's own Ashby integration — syncing scores and candidate lookups.",
+    env: 'ASHBY_API_KEY',
+  },
+];
+
+// GET /settings — current values + integration status (no live network calls,
+// no raw secrets: each secret is reported as configured + masked only).
 router.get('/settings', (req, res) => {
-  const internalKey = process.env.INTERNAL_API_KEY || '';
   res.json({
     pass_threshold: getPassThreshold(),
     max_call_attempts: getMaxCallAttempts(),
@@ -807,11 +922,22 @@ router.get('/settings', (req, res) => {
       interview_score_field_id: process.env.ASHBY_INTERVIEW_SCORE_FIELD_ID || null,
       questions_asked_field_id: process.env.ASHBY_INTERVIEW_COVERAGE_FIELD_ID || null,
     },
-    internal_api_key: {
-      configured: !!internalKey,
-      masked: maskSecret(internalKey),
-    },
+    secrets: SECRETS.map((s) => {
+      const value = process.env[s.env] || '';
+      return { key: s.key, label: s.label, hint: s.hint, configured: !!value, masked: maskSecret(value) };
+    }),
   });
+});
+
+// GET /settings/secrets/:key — reveal the raw value of a single secret. Called
+// only when the recruiter explicitly clicks "Reveal", so the raw value is never
+// part of the initial page payload. Ungated like the rest of the browser API
+// (this internal tool has no user login); returns null when not configured.
+router.get('/settings/secrets/:key', (req, res) => {
+  const secret = SECRETS.find((s) => s.key === req.params.key);
+  if (!secret) return res.status(404).json({ error: 'unknown secret' });
+  const value = process.env[secret.env] || '';
+  res.json({ key: secret.key, configured: !!value, value: value || null });
 });
 
 // GET /settings/ashby-status — best-effort live connectivity check (own call so
