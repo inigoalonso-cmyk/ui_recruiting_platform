@@ -66,7 +66,14 @@ router.put('/jobs/:id', (req, res) => {
 });
 
 router.delete('/jobs/:id', (req, res) => {
-  db.prepare('DELETE FROM jobs WHERE id = ?').run(req.params.id);
+  // Foreign-key cascade isn't enabled on this connection, so remove the
+  // folder's parameters and killer questions explicitly, in one transaction.
+  const removeJob = db.transaction((jobId) => {
+    db.prepare('DELETE FROM parameters WHERE job_id = ?').run(jobId);
+    db.prepare('DELETE FROM killer_questions WHERE job_id = ?').run(jobId);
+    db.prepare('DELETE FROM jobs WHERE id = ?').run(jobId);
+  });
+  removeJob(req.params.id);
   res.status(204).end();
 });
 

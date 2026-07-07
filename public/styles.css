@@ -203,6 +203,24 @@ html, body {
 .folder-tab.general { color: var(--accent); }
 .folder-tab.general.active { color: var(--accent); }
 
+/* Folder row = tab + hover ⋯ menu trigger */
+.folder-row { position: relative; display: flex; align-items: center; gap: 2px; }
+.folder-row .folder-tab { flex: 1; width: auto; min-width: 0; }
+.folder-row .folder-tab span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.folder-rename-input {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  padding: 7px 10px;
+}
+.folder-rename-input:focus { outline: none; }
+
 .folder-tab .tab-count {
   font-family: var(--font-mono);
   font-size: 11px;
@@ -994,6 +1012,105 @@ html, body {
 .meta-grid > div.full { grid-column: 1 / -1; }
 .meta-k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); font-weight: 600; }
 .meta-v { font-size: 14px; color: var(--text); }
+
+/* ---------- Row context menu (⋯) + confirm dialog ---------- */
+.row-menu-trigger {
+  flex: 0 0 auto;
+  justify-self: center;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  border-radius: 6px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.row-menu-trigger:hover { background: var(--surface-alt); color: var(--text); }
+/* Reveal on row hover, on the active/selected row, or when focused. */
+.folder-row:hover .row-menu-trigger,
+.folder-row.active .row-menu-trigger,
+.recruiter-row:hover .row-menu-trigger,
+.recruiter-row:focus-within .row-menu-trigger,
+.row-menu-trigger:focus-visible { opacity: 1; }
+
+.row-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 148px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.14);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+.row-menu-item {
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+.row-menu-item:hover,
+.row-menu-item:focus-visible { background: var(--surface-alt); outline: none; }
+.row-menu-item.danger { color: var(--fail-fg); }
+.row-menu-item.danger:hover { background: var(--fail-bg); }
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.modal {
+  width: 100%;
+  max-width: 420px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 20px 48px rgba(16, 24, 40, 0.24);
+  padding: 22px;
+}
+.modal-title { font-size: 16px; font-weight: 700; color: var(--text); }
+.modal-body { font-size: 13.5px; color: var(--text-muted); line-height: 1.5; margin-top: 8px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+
+.btn-secondary,
+.btn-danger,
+.btn-primary {
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.btn-secondary { background: var(--surface); border-color: var(--line); color: var(--text); }
+.btn-secondary:hover { background: var(--surface-alt); border-color: var(--line-strong); }
+.btn-danger { background: var(--fail-fg); color: #fff; }
+.btn-danger:hover { background: #9a1c12; }
+.btn-primary { background: var(--dark); color: #fff; }
+.btn-primary:hover { background: #000; }
+.btn-secondary:disabled,
+.btn-danger:disabled,
+.btn-primary:disabled { opacity: 0.6; cursor: default; }
 
 /* ---------- Settings page ---------- */
 .setting-row {

@@ -7,6 +7,7 @@ const state = {
   recruiterJobs: [],
   recruiterSelected: null, // recruiter_job id, or null when nothing is selected
   settings: null,      // cached app settings (pass threshold, etc.)
+  renamingFolderId: null, // job folder currently in inline-rename mode
 };
 
 // Pass/fail cutoff, read from settings (falls back to 8 until loaded).
@@ -46,19 +47,99 @@ async function loadJobs() {
 
 function renderFolderList() {
   folderListEl.innerHTML = '';
+  // "General" is a virtual folder (its params are stored with job_id IS NULL,
+  // and it's not a row in the jobs table) — so it can't be renamed or removed.
+  folderListEl.appendChild(buildFolderRow({ id: 'general', name: 'General', general: true }));
+  state.jobs.forEach(job => folderListEl.appendChild(buildFolderRow(job)));
+}
 
-  const generalBtn = document.createElement('button');
-  generalBtn.className = 'folder-tab general' + (state.selected === 'general' ? ' active' : '');
-  generalBtn.innerHTML = `<span>General</span>`;
-  generalBtn.onclick = () => selectFolder('general');
-  folderListEl.appendChild(generalBtn);
+function buildFolderRow(job) {
+  const row = document.createElement('div');
+  row.className = 'folder-row' + (state.selected === job.id ? ' active' : '');
 
-  state.jobs.forEach(job => {
-    const btn = document.createElement('button');
-    btn.className = 'folder-tab' + (state.selected === job.id ? ' active' : '');
-    btn.innerHTML = `<span>${escapeHtml(job.name)}</span>`;
-    btn.onclick = () => selectFolder(job.id);
-    folderListEl.appendChild(btn);
+  // Inline rename mode for a real folder.
+  if (!job.general && state.renamingFolderId === job.id) {
+    const input = document.createElement('input');
+    input.className = 'folder-rename-input';
+    input.value = job.name;
+    row.appendChild(input);
+    wireFolderRename(input, job);
+    return row;
+  }
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'folder-tab' + (job.general ? ' general' : '') + (state.selected === job.id ? ' active' : '');
+  btn.innerHTML = `<span>${escapeHtml(job.name)}</span>`;
+  btn.onclick = () => selectFolder(job.id);
+  row.appendChild(btn);
+
+  if (!job.general) {
+    row.appendChild(RowMenu.createRowMenu([
+      { label: 'Rename', onSelect: () => { state.renamingFolderId = job.id; renderFolderList(); } },
+      { label: 'Remove', variant: 'danger', onSelect: () => confirmRemoveFolder(job) },
+    ]));
+  }
+  return row;
+}
+
+// Turns the folder title into an inline text field; saves on Enter/blur,
+// cancels on Escape.
+function wireFolderRename(input, job) {
+  let settled = false;
+  requestAnimationFrame(() => { input.focus(); input.select(); });
+
+  async function save() {
+    if (settled) return;
+    settled = true;
+    const name = input.value.trim();
+    state.renamingFolderId = null;
+    if (!name || name === job.name) { renderFolderList(); return; }
+    try {
+      await api(`/jobs/${job.id}`, { method: 'PUT', body: JSON.stringify({ name }) });
+      await loadJobs(); // refreshes state.jobs + re-renders the list
+      if (state.selected === job.id) await renderContent(); // update the header
+      showToast('Folder renamed');
+    } catch (err) {
+      showToast(err.message, true);
+      renderFolderList();
+    }
+  }
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    else if (e.key === 'Escape') { settled = true; state.renamingFolderId = null; renderFolderList(); }
+  });
+  input.addEventListener('blur', save);
+}
+
+async function confirmRemoveFolder(job) {
+  // Fetch counts so the confirmation can state exactly what will be deleted.
+  let pCount = 0, kCount = 0;
+  try {
+    const [params, killers] = await Promise.all([
+      api(`/jobs/${job.id}/parameters`),
+      api(`/jobs/${job.id}/killer-questions`),
+    ]);
+    pCount = params.length;
+    kCount = killers.length;
+  } catch { /* fall back to 0s in the message */ }
+
+  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  RowMenu.confirmDialog({
+    title: 'Delete folder',
+    message: `Delete "${job.name}"? This removes all ${plural(pCount, 'parameter')} and ${plural(kCount, 'killer question')} in it. This can't be undone.`,
+    confirmLabel: 'Delete',
+    onConfirm: async () => {
+      await api(`/jobs/${job.id}`, { method: 'DELETE' });
+      await loadJobs();
+      // If we deleted the selected folder, fall back to the first remaining
+      // row (General is always present and first).
+      if (state.selected === job.id) state.selected = 'general';
+      renderFolderList();
+      await renderContent();
+      showToast('Folder deleted');
+    },
   });
 }
 
@@ -482,14 +563,12 @@ function buildRecruiterRow(r) {
     <input class="r-email mono-field" type="email" value="${escapeHtml(r.email)}" />
     <input class="r-cal mono-field" type="url" value="${escapeHtml(r.calendar_link)}" />
     <input class="r-notes" value="${escapeHtml(r.notes || '')}" placeholder="—" />
-    <button class="row-delete" title="Delete">×</button>
   `;
 
   const nameInput = row.querySelector('.r-name');
   const emailInput = row.querySelector('.r-email');
   const calInput = row.querySelector('.r-cal');
   const notesInput = row.querySelector('.r-notes');
-  const deleteBtn = row.querySelector('.row-delete');
 
   async function save(patch) {
     try {
@@ -502,6 +581,8 @@ function buildRecruiterRow(r) {
     if (!nameInput.value.trim()) { nameInput.value = r.name; return showToast('Name cannot be empty', true); }
     save({ name: nameInput.value.trim() });
   });
+  // Enter commits the rename (blur triggers the change handler above).
+  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); nameInput.blur(); } });
   emailInput.addEventListener('change', () => {
     if (!isEmail(emailInput.value)) { emailInput.value = r.email; return showToast('Please enter a valid email', true); }
     save({ email: emailInput.value.trim() });
@@ -511,13 +592,24 @@ function buildRecruiterRow(r) {
     save({ calendar_link: calInput.value.trim() });
   });
   notesInput.addEventListener('change', () => save({ notes: notesInput.value.trim() }));
-  deleteBtn.addEventListener('click', async () => {
-    try {
-      await api(`/recruiters/${r.id}`, { method: 'DELETE' });
-      showToast('Recruiter deleted');
-      await renderContent();
-    } catch (err) { showToast(err.message, true); }
-  });
+
+  row.appendChild(RowMenu.createRowMenu([
+    { label: 'Rename', onSelect: () => { nameInput.focus(); nameInput.select(); } },
+    {
+      label: 'Remove',
+      variant: 'danger',
+      onSelect: () => RowMenu.confirmDialog({
+        title: 'Remove recruiter',
+        message: `Remove "${r.name}" from recruiters? This can't be undone.`,
+        confirmLabel: 'Remove',
+        onConfirm: async () => {
+          await api(`/recruiters/${r.id}`, { method: 'DELETE' });
+          showToast('Recruiter deleted');
+          await renderContent();
+        },
+      }),
+    },
+  ]));
 
   return row;
 }
