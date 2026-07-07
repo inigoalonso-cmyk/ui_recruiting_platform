@@ -12,6 +12,7 @@ const state = {
   jobInfoSelected: 'general', // 'general' or job.id in the Job Info section
   renamingJobInfoFolderId: null, // job folder being renamed from Job Info
   editingFactId: null, // job-info fact currently being edited inline
+  expandedFacts: new Set(), // fact ids currently expanded (client-side only)
 };
 
 // Pass/fail cutoff, read from settings (falls back to 8 until loaded).
@@ -910,12 +911,19 @@ function buildFactBanner(f) {
     return el;
   }
 
+  // Collapsed by default: only the label shows until the card is clicked.
+  const expanded = state.expandedFacts.has(f.id);
+  el.classList.add('collapsible');
+  if (expanded) el.classList.add('expanded');
   el.innerHTML = `
     <div class="fact-body">
       <div class="fact-label">${escapeHtml(f.label)}</div>
       <div class="fact-value">${escapeHtml(f.value)}</div>
-    </div>`;
-  el.appendChild(RowMenu.createRowMenu([
+    </div>
+    <div class="fact-actions"></div>`;
+
+  const actions = el.querySelector('.fact-actions');
+  actions.appendChild(RowMenu.createRowMenu([
     { label: 'Edit', onSelect: () => { state.editingFactId = f.id; renderContent(); } },
     {
       label: 'Remove',
@@ -926,12 +934,33 @@ function buildFactBanner(f) {
         confirmLabel: 'Remove',
         onConfirm: async () => {
           await api(`/job-info/${f.id}`, { method: 'DELETE' });
+          state.expandedFacts.delete(f.id);
           showToast('Fact removed');
           await renderContent();
         },
       }),
     },
   ]));
+
+  const chevron = document.createElement('span');
+  chevron.className = 'fact-chevron';
+  chevron.setAttribute('aria-hidden', 'true');
+  chevron.textContent = expanded ? '˄' : '˅';
+  actions.appendChild(chevron);
+
+  // Clicking the card (label, value, or chevron) toggles; the ⋯ trigger stops
+  // propagation so it won't toggle. Toggle just this card for smooth,
+  // independent open/close without a full re-render.
+  el.setAttribute('role', 'button');
+  el.setAttribute('aria-expanded', String(expanded));
+  el.addEventListener('click', () => {
+    const nowExpanded = !state.expandedFacts.has(f.id);
+    if (nowExpanded) state.expandedFacts.add(f.id);
+    else state.expandedFacts.delete(f.id);
+    el.classList.toggle('expanded', nowExpanded);
+    el.setAttribute('aria-expanded', String(nowExpanded));
+    chevron.textContent = nowExpanded ? '˄' : '˅';
+  });
   return el;
 }
 

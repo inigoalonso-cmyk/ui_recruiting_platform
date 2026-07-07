@@ -1047,6 +1047,34 @@ html, body {
 .fact-banner:hover .row-menu-trigger,
 .fact-banner:focus-within .row-menu-trigger { opacity: 1; }
 
+/* Collapse/expand */
+.fact-banner.collapsible { cursor: pointer; }
+.fact-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+.fact-chevron {
+  width: 20px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13px;
+  line-height: 1;
+  user-select: none;
+  transition: color 0.12s ease;
+}
+.fact-banner:hover .fact-chevron { color: var(--text-muted); }
+
+/* Collapsed: value hidden; expanded: smoothly revealed. */
+.fact-banner.collapsible .fact-value {
+  max-height: 0;
+  margin-top: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 0.2s ease, opacity 0.2s ease, margin-top 0.2s ease;
+}
+.fact-banner.collapsible.expanded .fact-value {
+  max-height: 600px;
+  margin-top: 3px;
+  opacity: 1;
+}
+
 .fact-edit { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 0; }
 .fact-label-input,
 .fact-value-input {
