@@ -79,7 +79,7 @@
     btn.className = 'row-menu-trigger';
     btn.setAttribute('aria-label', 'Row actions');
     btn.title = 'Actions';
-    btn.textContent = '⋯';
+    btn.textContent = '⋮';
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       e.stopPropagation();
