@@ -8,6 +8,7 @@ const state = {
   recruiterSelected: null, // recruiter_job id, or null when nothing is selected
   settings: null,      // cached app settings (pass threshold, etc.)
   renamingFolderId: null, // job folder currently in inline-rename mode
+  renamingRecruiterFolderId: null, // recruiter folder in inline-rename mode
 };
 
 // Pass/fail cutoff, read from settings (falls back to 8 until loaded).
@@ -462,12 +463,89 @@ async function loadRecruiterJobs() {
 
 function renderRecruiterFolderList() {
   recruiterFolderListEl.innerHTML = '';
-  state.recruiterJobs.forEach(job => {
-    const btn = document.createElement('button');
-    btn.className = 'folder-tab' + (state.recruiterSelected === job.id ? ' active' : '');
-    btn.innerHTML = `<span>${escapeHtml(job.name)}</span>`;
-    btn.onclick = () => selectRecruiterFolder(job.id);
-    recruiterFolderListEl.appendChild(btn);
+  state.recruiterJobs.forEach(job => recruiterFolderListEl.appendChild(buildRecruiterFolderRow(job)));
+}
+
+// Mirrors buildFolderRow (Criteria tab): a folder tab plus the shared ⋯ menu
+// with Rename / Remove. Recruiter folders have no virtual "General", so every
+// one gets the menu.
+function buildRecruiterFolderRow(job) {
+  const row = document.createElement('div');
+  row.className = 'folder-row' + (state.recruiterSelected === job.id ? ' active' : '');
+
+  if (state.renamingRecruiterFolderId === job.id) {
+    const input = document.createElement('input');
+    input.className = 'folder-rename-input';
+    input.value = job.name;
+    row.appendChild(input);
+    wireRecruiterFolderRename(input, job);
+    return row;
+  }
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'folder-tab' + (state.recruiterSelected === job.id ? ' active' : '');
+  btn.innerHTML = `<span>${escapeHtml(job.name)}</span>`;
+  btn.onclick = () => selectRecruiterFolder(job.id);
+  row.appendChild(btn);
+
+  row.appendChild(RowMenu.createRowMenu([
+    { label: 'Rename', onSelect: () => { state.renamingRecruiterFolderId = job.id; renderRecruiterFolderList(); } },
+    { label: 'Remove', variant: 'danger', onSelect: () => confirmRemoveRecruiterFolder(job) },
+  ]));
+  return row;
+}
+
+function wireRecruiterFolderRename(input, job) {
+  let settled = false;
+  requestAnimationFrame(() => { input.focus(); input.select(); });
+
+  async function save() {
+    if (settled) return;
+    settled = true;
+    const name = input.value.trim();
+    state.renamingRecruiterFolderId = null;
+    if (!name || name === job.name) { renderRecruiterFolderList(); return; }
+    try {
+      await api(`/recruiter-jobs/${job.id}`, { method: 'PUT', body: JSON.stringify({ name }) });
+      await loadRecruiterJobs(); // refreshes state.recruiterJobs + re-renders the list
+      if (state.recruiterSelected === job.id) await renderContent(); // update the header
+      showToast('Folder renamed');
+    } catch (err) {
+      showToast(err.message, true);
+      renderRecruiterFolderList();
+    }
+  }
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    else if (e.key === 'Escape') { settled = true; state.renamingRecruiterFolderId = null; renderRecruiterFolderList(); }
+  });
+  input.addEventListener('blur', save);
+}
+
+async function confirmRemoveRecruiterFolder(job) {
+  // Count recruiters so the confirmation states what will be removed (deleting
+  // the folder cascades its recruiter contacts).
+  let n = 0;
+  try { n = (await api(`/recruiter-jobs/${job.id}/recruiters`)).length; } catch { /* fall back to 0 */ }
+  const plural = (c, w) => `${c} ${w}${c === 1 ? '' : 's'}`;
+  RowMenu.confirmDialog({
+    title: 'Delete folder',
+    message: `Delete "${job.name}"? This removes the folder and ${plural(n, 'recruiter')} in it. This can't be undone.`,
+    confirmLabel: 'Delete',
+    onConfirm: async () => {
+      await api(`/recruiter-jobs/${job.id}`, { method: 'DELETE' });
+      await loadRecruiterJobs();
+      // If we deleted the selected folder, fall back to the first remaining one
+      // (or the empty state when none are left).
+      if (state.recruiterSelected === job.id) {
+        state.recruiterSelected = state.recruiterJobs.length ? state.recruiterJobs[0].id : null;
+      }
+      renderRecruiterFolderList();
+      await renderContent();
+      showToast('Folder deleted');
+    },
   });
 }
 
