@@ -71,6 +71,7 @@ router.delete('/jobs/:id', (req, res) => {
   const removeJob = db.transaction((jobId) => {
     db.prepare('DELETE FROM parameters WHERE job_id = ?').run(jobId);
     db.prepare('DELETE FROM killer_questions WHERE job_id = ?').run(jobId);
+    db.prepare('DELETE FROM job_info_facts WHERE job_id = ?').run(jobId);
     db.prepare('DELETE FROM jobs WHERE id = ?').run(jobId);
   });
   removeJob(req.params.id);
@@ -179,6 +180,78 @@ router.put('/killer-questions/:id', (req, res) => {
 router.delete('/killer-questions/:id', (req, res) => {
   db.prepare('DELETE FROM killer_questions WHERE id = ?').run(req.params.id);
   res.status(204).end();
+});
+
+// ---------- JOB INFO FACTS (per job; job_id NULL = general) ----------
+// Recruiter-facing label/value facts for the candidate-facing JobBot agent.
+router.get('/jobs/:jobId/job-info', (req, res) => {
+  const jobId = req.params.jobId === 'general' ? null : req.params.jobId;
+  const rows = jobId === null
+    ? db.prepare('SELECT * FROM job_info_facts WHERE job_id IS NULL ORDER BY sort_order, created_at').all()
+    : db.prepare('SELECT * FROM job_info_facts WHERE job_id = ? ORDER BY sort_order, created_at').all(jobId);
+  res.json(rows);
+});
+
+router.post('/jobs/:jobId/job-info', (req, res) => {
+  const jobId = req.params.jobId === 'general' ? null : req.params.jobId;
+  const { label, value } = req.body;
+  if (!label || !label.trim()) return res.status(400).json({ error: 'label is required' });
+  if (value === undefined || value === null || !String(value).trim()) return res.status(400).json({ error: 'value is required' });
+  if (jobId !== null && !db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(jobId)) {
+    return res.status(404).json({ error: 'job not found' });
+  }
+  // Append to the end of this job's list.
+  const nextRow = jobId === null
+    ? db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM job_info_facts WHERE job_id IS NULL').get()
+    : db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM job_info_facts WHERE job_id = ?').get(jobId);
+  const id = uuid();
+  db.prepare('INSERT INTO job_info_facts (id, job_id, label, value, sort_order) VALUES (?, ?, ?, ?, ?)')
+    .run(id, jobId, label.trim(), String(value).trim(), nextRow.n);
+  res.status(201).json(db.prepare('SELECT * FROM job_info_facts WHERE id = ?').get(id));
+});
+
+router.put('/job-info/:id', (req, res) => {
+  const existing = db.prepare('SELECT * FROM job_info_facts WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'fact not found' });
+  const { label, value } = req.body;
+  if (label !== undefined && !label.trim()) return res.status(400).json({ error: 'label cannot be empty' });
+  if (value !== undefined && !String(value).trim()) return res.status(400).json({ error: 'value cannot be empty' });
+  db.prepare(`
+    UPDATE job_info_facts
+       SET label = COALESCE(?, label), value = COALESCE(?, value), updated_at = datetime('now')
+     WHERE id = ?
+  `).run(
+    label !== undefined ? label.trim() : null,
+    value !== undefined ? String(value).trim() : null,
+    req.params.id,
+  );
+  res.json(db.prepare('SELECT * FROM job_info_facts WHERE id = ?').get(req.params.id));
+});
+
+router.delete('/job-info/:id', (req, res) => {
+  db.prepare('DELETE FROM job_info_facts WHERE id = ?').run(req.params.id);
+  res.status(204).end();
+});
+
+// JobBot-facing lookup: GET /jobinfo/lookup?job=...
+// Resolves a job by Ashby job id first, then by name (case-insensitive), and
+// returns its facts (job-specific first, then general facts that apply to all
+// jobs). Always 200 with a `found` flag; 400 only when `job` is missing.
+router.get('/jobinfo/lookup', requireInternalKey, (req, res) => {
+  const q = (req.query.job || '').trim();
+  if (!q) return res.status(400).json({ error: 'job query parameter is required' });
+
+  let job = db.prepare('SELECT id, name, ashby_job_id FROM jobs WHERE ashby_job_id = ?').get(q);
+  if (!job) job = db.prepare('SELECT id, name, ashby_job_id FROM jobs WHERE lower(trim(name)) = lower(?)').get(q);
+  if (!job) return res.json({ found: false });
+
+  const jobFacts = db.prepare('SELECT label, value FROM job_info_facts WHERE job_id = ? ORDER BY sort_order, created_at').all(job.id);
+  const generalFacts = db.prepare('SELECT label, value FROM job_info_facts WHERE job_id IS NULL ORDER BY sort_order, created_at').all();
+  res.json({
+    found: true,
+    job: { id: job.id, name: job.name, ashby_job_id: job.ashby_job_id || null },
+    facts: [...jobFacts, ...generalFacts],
+  });
 });
 
 // ---------- CONSOLIDATED CONFIG: what Happy Robot consumes to evaluate a candidate ----------

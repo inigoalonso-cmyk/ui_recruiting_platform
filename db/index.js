@@ -57,6 +57,21 @@ CREATE TABLE IF NOT EXISTS settings (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+-- Job Info facts: free-form label/value pairs about a role (salary, location,
+-- remote policy, start date…) that the candidate-facing "JobBot" voice agent
+-- looks up. Shares the same jobs table as Screening. job_id NULL = general
+-- facts that apply to every job (mirrors the parameters table).
+CREATE TABLE IF NOT EXISTS job_info_facts (
+  id TEXT PRIMARY KEY,
+  job_id TEXT REFERENCES jobs(id) ON DELETE CASCADE,
+  label TEXT NOT NULL,
+  value TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_job_info_facts_job ON job_info_facts (job_id, sort_order);
+
 -- Prescreen (Phase 1) results land here.
 CREATE TABLE IF NOT EXISTS score_log (
   id TEXT PRIMARY KEY,

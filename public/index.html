@@ -25,6 +25,10 @@
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           <span class="icon-label">Recruiters</span>
         </button>
+        <button id="section-jobinfo" class="icon-btn labeled" type="button" title="Job Info" aria-label="Job Info">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+          <span class="icon-label">Job Info</span>
+        </button>
       </nav>
     </div>
 
@@ -66,6 +70,16 @@
 
       <form id="new-recruiter-job-form" class="new-job-form">
         <input id="new-recruiter-job-name" type="text" placeholder="Job title…" autocomplete="off" />
+        <button type="submit">+ New folder</button>
+      </form>
+    </div>
+
+    <div id="jobinfo-section" class="section-panel" style="display:none">
+      <div class="rail-section-label">Folders</div>
+      <div id="jobinfo-folder-list" class="folder-list"></div>
+
+      <form id="new-jobinfo-form" class="new-job-form">
+        <input id="new-jobinfo-name" type="text" placeholder="Job title…" autocomplete="off" />
         <button type="submit">+ New folder</button>
       </form>
     </div>

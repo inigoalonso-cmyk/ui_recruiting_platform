@@ -488,10 +488,11 @@ html, body {
   text-align: center;
 }
 
-/* Shared "add row" button — identical square "+" in both Evaluation
-   parameters and Killer questions. */
+/* Shared "add row" button — identical square "+" across Evaluation
+   parameters, Killer questions, and Job Info facts. */
 .add-row-form button,
-.add-killer-form button {
+.add-killer-form button,
+.add-fact-form button {
   width: 40px;
   height: 40px;
   flex: 0 0 auto;
@@ -511,7 +512,8 @@ html, body {
   transition: background 0.15s ease;
 }
 .add-row-form button:hover,
-.add-killer-form button:hover { background: #000; }
+.add-killer-form button:hover,
+.add-fact-form button:hover { background: #000; }
 
 /* ---------- Killer questions ---------- */
 .killer-list {
@@ -640,25 +642,29 @@ html, body {
   text-align: center;
 }
 
-/* ---------- Toast ---------- */
+/* ---------- Toast (notification-banner style, matches Job Info facts) ---------- */
 .toast {
   position: fixed;
-  bottom: 24px;
+  top: 20px;
   right: 24px;
-  background: var(--dark);
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  padding: 11px 16px;
-  border-radius: var(--radius-sm);
+  max-width: 360px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--text);
+  padding: 12px 16px;
+  border-radius: var(--radius);
   font-size: 13px;
-  box-shadow: 0 8px 24px rgba(16, 24, 40, 0.18);
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 10px 28px rgba(16, 24, 40, 0.14);
   opacity: 0;
-  transform: translateY(8px);
+  transform: translateY(-8px);
   transition: opacity 0.2s ease, transform 0.2s ease;
   pointer-events: none;
+  z-index: 1200;
 }
 .toast.show { opacity: 1; transform: translateY(0); }
-.toast.error { background: var(--fail-fg); border-color: transparent; }
+.toast.error { border-left-color: var(--fail-fg); color: var(--fail-fg); }
 
 /* ---------- Rail nav (Criteria / History) ---------- */
 .rail-nav {
@@ -1012,6 +1018,82 @@ html, body {
 .meta-grid > div.full { grid-column: 1 / -1; }
 .meta-k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-faint); font-weight: 600; }
 .meta-v { font-size: 14px; color: var(--text); }
+
+/* ---------- Job Info: notification-banner fact cards ---------- */
+.fact-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fact-banner {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 6px 16px rgba(16, 24, 40, 0.05);
+  padding: 13px 15px;
+}
+
+.fact-body { min-width: 0; flex: 1; }
+.fact-label { font-size: 13.5px; font-weight: 700; color: var(--text); line-height: 1.3; }
+.fact-value { font-size: 13.5px; color: var(--text-muted); margin-top: 3px; line-height: 1.45; word-break: break-word; }
+
+.fact-banner .row-menu-trigger { margin-top: -2px; }
+.fact-banner:hover .row-menu-trigger,
+.fact-banner:focus-within .row-menu-trigger { opacity: 1; }
+
+.fact-edit { display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 0; }
+.fact-label-input,
+.fact-value-input {
+  width: 100%;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  padding: 8px 10px;
+}
+.fact-label-input { font-weight: 600; }
+.fact-label-input:focus,
+.fact-value-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.fact-save {
+  flex: 0 0 auto;
+  align-self: flex-start;
+  background: var(--dark);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.fact-save:hover { background: #000; }
+
+.add-fact-form {
+  display: grid;
+  grid-template-columns: 1fr 1fr 40px;
+  gap: 12px;
+  margin-top: 14px;
+}
+.add-fact-form input {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-body);
+  font-size: 13px;
+}
+.add-fact-form input::placeholder { color: var(--text-faint); }
+.add-fact-form input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
 /* ---------- Row context menu (⋯) + confirm dialog ---------- */
 .row-menu-trigger {

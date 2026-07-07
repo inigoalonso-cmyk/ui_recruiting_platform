@@ -9,6 +9,9 @@ const state = {
   settings: null,      // cached app settings (pass threshold, etc.)
   renamingFolderId: null, // job folder currently in inline-rename mode
   renamingRecruiterFolderId: null, // recruiter folder in inline-rename mode
+  jobInfoSelected: 'general', // 'general' or job.id in the Job Info section
+  renamingJobInfoFolderId: null, // job folder being renamed from Job Info
+  editingFactId: null, // job-info fact currently being edited inline
 };
 
 // Pass/fail cutoff, read from settings (falls back to 8 until loaded).
@@ -20,6 +23,7 @@ function passThreshold() {
 const contentEl = document.getElementById('content');
 const folderListEl = document.getElementById('folder-list');
 const recruiterFolderListEl = document.getElementById('recruiter-folder-list');
+const jobinfoFolderListEl = document.getElementById('jobinfo-folder-list');
 const toastEl = document.getElementById('toast');
 
 function showToast(msg, isError = false) {
@@ -44,6 +48,7 @@ async function api(path, options = {}) {
 async function loadJobs() {
   state.jobs = await api('/jobs');
   renderFolderList();
+  renderJobInfoFolderList(); // same jobs power the Job Info folder list
 }
 
 function renderFolderList() {
@@ -115,29 +120,33 @@ function wireFolderRename(input, job) {
 }
 
 async function confirmRemoveFolder(job) {
-  // Fetch counts so the confirmation can state exactly what will be deleted.
-  let pCount = 0, kCount = 0;
+  // A job folder is one shared identity across Screening, Recruiters and Job
+  // Info, so deleting it removes everything in it. Fetch counts for the message.
+  let pCount = 0, kCount = 0, fCount = 0;
   try {
-    const [params, killers] = await Promise.all([
+    const [params, killers, facts] = await Promise.all([
       api(`/jobs/${job.id}/parameters`),
       api(`/jobs/${job.id}/killer-questions`),
+      api(`/jobs/${job.id}/job-info`),
     ]);
     pCount = params.length;
     kCount = killers.length;
+    fCount = facts.length;
   } catch { /* fall back to 0s in the message */ }
 
   const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
   RowMenu.confirmDialog({
     title: 'Delete folder',
-    message: `Delete "${job.name}"? This removes all ${plural(pCount, 'parameter')} and ${plural(kCount, 'killer question')} in it. This can't be undone.`,
+    message: `Delete "${job.name}"? This removes the job folder and all ${plural(pCount, 'parameter')}, ${plural(kCount, 'killer question')}, and ${plural(fCount, 'job-info fact')} in it. This can't be undone.`,
     confirmLabel: 'Delete',
     onConfirm: async () => {
       await api(`/jobs/${job.id}`, { method: 'DELETE' });
-      await loadJobs();
-      // If we deleted the selected folder, fall back to the first remaining
-      // row (General is always present and first).
+      await loadJobs(); // re-renders both the Screening and Job Info folder lists
+      // Fall back to General in whichever section had this folder selected.
       if (state.selected === job.id) state.selected = 'general';
+      if (state.jobInfoSelected === job.id) state.jobInfoSelected = 'general';
       renderFolderList();
+      renderJobInfoFolderList();
       await renderContent();
       showToast('Folder deleted');
     },
@@ -181,6 +190,10 @@ function setView(view) {
 async function renderContent() {
   if (state.section === 'recruiters') {
     await renderRecruitersView();
+    return;
+  }
+  if (state.section === 'jobinfo') {
+    await renderJobInfoView();
     return;
   }
   if (state.view === 'history') {
@@ -438,9 +451,11 @@ function setSection(section) {
   state.section = section;
   document.getElementById('section-screening').classList.toggle('active', section === 'screening');
   document.getElementById('section-recruiters').classList.toggle('active', section === 'recruiters');
+  document.getElementById('section-jobinfo').classList.toggle('active', section === 'jobinfo');
   document.getElementById('nav-settings').classList.remove('active');
   document.getElementById('screening-section').style.display = section === 'screening' ? '' : 'none';
   document.getElementById('recruiters-section').style.display = section === 'recruiters' ? '' : 'none';
+  document.getElementById('jobinfo-section').style.display = section === 'jobinfo' ? '' : 'none';
   renderContent();
 }
 
@@ -449,7 +464,24 @@ document.getElementById('section-recruiters').addEventListener('click', async ()
   await loadRecruiterJobs();
   setSection('recruiters');
 });
+document.getElementById('section-jobinfo').addEventListener('click', () => setSection('jobinfo'));
 document.getElementById('nav-settings').addEventListener('click', () => setSettingsView());
+
+document.getElementById('new-jobinfo-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('new-jobinfo-name');
+  const name = input.value.trim();
+  if (!name) return;
+  try {
+    const job = await api('/jobs', { method: 'POST', body: JSON.stringify({ name }) });
+    input.value = '';
+    await loadJobs();
+    state.jobInfoSelected = job.id;
+    renderJobInfoFolderList();
+    await renderContent();
+    showToast('Folder created');
+  } catch (err) { showToast(err.message, true); }
+});
 
 // ================= RECRUITERS =================
 
@@ -706,6 +738,203 @@ document.getElementById('new-recruiter-job-form').addEventListener('submit', asy
   } catch (err) { showToast(err.message, true); }
 });
 
+// ================= JOB INFO =================
+// Reuses the shared jobs folders (same identity as Screening). Facts are
+// label/value pairs the candidate-facing JobBot agent looks up per job.
+
+function renderJobInfoFolderList() {
+  if (!jobinfoFolderListEl) return;
+  jobinfoFolderListEl.innerHTML = '';
+  jobinfoFolderListEl.appendChild(buildJobInfoFolderRow({ id: 'general', name: 'General', general: true }));
+  state.jobs.forEach(job => jobinfoFolderListEl.appendChild(buildJobInfoFolderRow(job)));
+}
+
+function buildJobInfoFolderRow(job) {
+  const row = document.createElement('div');
+  row.className = 'folder-row' + (state.jobInfoSelected === job.id ? ' active' : '');
+
+  if (!job.general && state.renamingJobInfoFolderId === job.id) {
+    const input = document.createElement('input');
+    input.className = 'folder-rename-input';
+    input.value = job.name;
+    row.appendChild(input);
+    wireJobInfoFolderRename(input, job);
+    return row;
+  }
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'folder-tab' + (job.general ? ' general' : '') + (state.jobInfoSelected === job.id ? ' active' : '');
+  btn.innerHTML = `<span>${escapeHtml(job.name)}</span>`;
+  btn.onclick = () => selectJobInfoFolder(job.id);
+  row.appendChild(btn);
+
+  if (!job.general) {
+    row.appendChild(RowMenu.createRowMenu([
+      { label: 'Rename', onSelect: () => { state.renamingJobInfoFolderId = job.id; renderJobInfoFolderList(); } },
+      { label: 'Remove', variant: 'danger', onSelect: () => confirmRemoveFolder(job) },
+    ]));
+  }
+  return row;
+}
+
+function wireJobInfoFolderRename(input, job) {
+  let settled = false;
+  requestAnimationFrame(() => { input.focus(); input.select(); });
+
+  async function save() {
+    if (settled) return;
+    settled = true;
+    const name = input.value.trim();
+    state.renamingJobInfoFolderId = null;
+    if (!name || name === job.name) { renderJobInfoFolderList(); return; }
+    try {
+      await api(`/jobs/${job.id}`, { method: 'PUT', body: JSON.stringify({ name }) });
+      await loadJobs(); // refreshes both folder lists (same job identity)
+      await renderContent();
+      showToast('Folder renamed');
+    } catch (err) {
+      showToast(err.message, true);
+      renderJobInfoFolderList();
+    }
+  }
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    else if (e.key === 'Escape') { settled = true; state.renamingJobInfoFolderId = null; renderJobInfoFolderList(); }
+  });
+  input.addEventListener('blur', save);
+}
+
+async function selectJobInfoFolder(id) {
+  state.jobInfoSelected = id;
+  state.editingFactId = null;
+  renderJobInfoFolderList();
+  await renderContent();
+}
+
+async function renderJobInfoView() {
+  const id = state.jobInfoSelected;
+  const isGeneral = id === 'general';
+  const job = isGeneral ? null : state.jobs.find(j => j.id === id);
+  if (!isGeneral && !job) { state.jobInfoSelected = 'general'; return renderJobInfoView(); }
+
+  const name = isGeneral ? 'General' : job.name;
+  const scopeId = isGeneral ? 'general' : job.id;
+  const lookupKey = isGeneral ? '' : encodeURIComponent(job.ashby_job_id || job.name);
+
+  contentEl.innerHTML = `
+    <div class="folder-label">Job Info</div>
+    <h1 class="folder-title">${escapeHtml(name)}</h1>
+    <div class="folder-meta">${isGeneral
+      ? 'Facts that apply to every job. JobBot includes these alongside each job’s own facts.'
+      : `Facts the JobBot voice agent can answer for this role. Fetched via <span class="mono">GET /api/jobinfo/lookup?job=${escapeHtml(lookupKey)}</span>.`}</div>
+    <div class="section" id="jobinfo-facts"></div>`;
+
+  let facts;
+  try {
+    facts = await api(`/jobs/${scopeId}/job-info`);
+  } catch (err) {
+    document.getElementById('jobinfo-facts').innerHTML = `<div class="empty-state">Could not load facts: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  renderFactsSection(document.getElementById('jobinfo-facts'), facts, scopeId);
+}
+
+function renderFactsSection(container, facts, scopeId) {
+  container.innerHTML = `
+    <div class="section-heading">
+      <h2>Job facts</h2>
+      <span class="weight-total">${facts.length} ${facts.length === 1 ? 'fact' : 'facts'}</span>
+    </div>
+    <div class="section-hint">Label + value pairs a candidate might ask JobBot about — salary, location, remote policy, start date, benefits… Add whatever matters for this role.</div>
+    <div class="fact-list" id="fact-list"></div>
+    <form class="add-fact-form" id="add-fact-form">
+      <input type="text" name="label" placeholder="Label (e.g. Salary range)" required />
+      <input type="text" name="value" placeholder="Value (e.g. $80k–100k)" required />
+      <button type="submit" title="Add fact">+</button>
+    </form>`;
+
+  const listEl = container.querySelector('#fact-list');
+  if (!facts.length) {
+    listEl.innerHTML = `<div class="empty-state">No facts yet. Add the first one below.</div>`;
+  } else {
+    facts.forEach(f => listEl.appendChild(buildFactBanner(f)));
+  }
+
+  container.querySelector('#add-fact-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const label = form.label.value.trim();
+    const value = form.value.value.trim();
+    if (!label || !value) return;
+    try {
+      await api(`/jobs/${scopeId}/job-info`, { method: 'POST', body: JSON.stringify({ label, value }) });
+      showToast('Fact added');
+      await renderContent();
+    } catch (err) { showToast(err.message, true); }
+  });
+}
+
+function buildFactBanner(f) {
+  const el = document.createElement('div');
+  el.className = 'fact-banner';
+
+  if (state.editingFactId === f.id) {
+    el.classList.add('editing');
+    el.innerHTML = `
+      <div class="fact-edit">
+        <input class="fact-label-input" value="${escapeHtml(f.label)}" placeholder="Label" />
+        <input class="fact-value-input" value="${escapeHtml(f.value)}" placeholder="Value" />
+      </div>
+      <button class="fact-save" type="button">Save</button>`;
+    const labelI = el.querySelector('.fact-label-input');
+    const valueI = el.querySelector('.fact-value-input');
+    const save = async () => {
+      const label = labelI.value.trim();
+      const value = valueI.value.trim();
+      if (!label || !value) { showToast('Label and value are required', true); return; }
+      state.editingFactId = null;
+      try {
+        await api(`/job-info/${f.id}`, { method: 'PUT', body: JSON.stringify({ label, value }) });
+        showToast('Fact updated');
+        await renderContent();
+      } catch (err) { showToast(err.message, true); await renderContent(); }
+    };
+    el.querySelector('.fact-save').addEventListener('click', save);
+    [labelI, valueI].forEach(inp => inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); save(); }
+      else if (e.key === 'Escape') { state.editingFactId = null; renderContent(); }
+    }));
+    requestAnimationFrame(() => { labelI.focus(); labelI.select(); });
+    return el;
+  }
+
+  el.innerHTML = `
+    <div class="fact-body">
+      <div class="fact-label">${escapeHtml(f.label)}</div>
+      <div class="fact-value">${escapeHtml(f.value)}</div>
+    </div>`;
+  el.appendChild(RowMenu.createRowMenu([
+    { label: 'Edit', onSelect: () => { state.editingFactId = f.id; renderContent(); } },
+    {
+      label: 'Remove',
+      variant: 'danger',
+      onSelect: () => RowMenu.confirmDialog({
+        title: 'Remove fact',
+        message: `Remove "${f.label}" from this job’s info? This can't be undone.`,
+        confirmLabel: 'Remove',
+        onConfirm: async () => {
+          await api(`/job-info/${f.id}`, { method: 'DELETE' });
+          showToast('Fact removed');
+          await renderContent();
+        },
+      }),
+    },
+  ]));
+  return el;
+}
+
 // ================= HISTORY VIEW =================
 
 function fmtDate(iso) {
@@ -943,9 +1172,11 @@ function setSettingsView() {
   state.section = 'settings';
   document.getElementById('section-screening').classList.remove('active');
   document.getElementById('section-recruiters').classList.remove('active');
+  document.getElementById('section-jobinfo').classList.remove('active');
   document.getElementById('nav-settings').classList.add('active');
   document.getElementById('screening-section').style.display = 'none';
   document.getElementById('recruiters-section').style.display = 'none';
+  document.getElementById('jobinfo-section').style.display = 'none';
   renderSettingsView();
 }
 
