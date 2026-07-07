@@ -1,12 +1,19 @@
 const state = {
-  section: 'screening', // 'screening' or 'recruiters'
+  section: 'screening', // 'screening', 'recruiters', or 'settings'
   jobs: [],
   selected: 'general', // 'general' or job.id
   view: 'criteria',    // 'criteria' or 'history'
   historyApp: null,    // selected application id in the history detail view
   recruiterJobs: [],
   recruiterSelected: null, // recruiter_job id, or null when nothing is selected
+  settings: null,      // cached app settings (pass threshold, etc.)
 };
+
+// Pass/fail cutoff, read from settings (falls back to 8 until loaded).
+function passThreshold() {
+  const t = state.settings && Number(state.settings.pass_threshold);
+  return Number.isFinite(t) ? t : 8;
+}
 
 const contentEl = document.getElementById('content');
 const folderListEl = document.getElementById('folder-list');
@@ -59,6 +66,15 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+// Initials for the little circular avatars (e.g. "Jorge Janeiro" -> "JJ").
+function initials(name) {
+  const s = (name || '').trim();
+  if (!s) return '—';
+  const parts = s.split(/\s+/).filter(Boolean);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 async function selectFolder(id) {
@@ -142,21 +158,34 @@ async function renderJobView(jobId) {
   renderKillerSection(document.getElementById('killer-section'), killers, jobId);
 }
 
-function renderParamsSection(container, params, scopeId) {
-  const total = params.reduce((sum, p) => sum + p.weight, 0);
-  const totalClass = total === 0 ? '' : (Math.abs(total - 10) < 0.01 ? 'balanced' : (total > 10 ? 'over' : ''));
+// Weights are relative importance, not a fixed /10 total. Recompute each row's
+// share of the current total live, so recruiters never have to hit an exact sum.
+function recomputeWeightNormalization(cardEl) {
+  if (!cardEl) return;
+  const rows = [...cardEl.querySelectorAll('.param-row')];
+  const vals = rows.map(r => Math.max(0, Number(r.querySelector('.weight-input').value) || 0));
+  const total = vals.reduce((sum, v) => sum + v, 0);
+  rows.forEach((r, i) => {
+    const pct = total > 0 ? (vals[i] / total) * 100 : 0;
+    const fill = r.querySelector('.weight-bar-fill');
+    const label = r.querySelector('.weight-pct');
+    if (fill) fill.style.width = `${pct}%`;
+    if (label) label.textContent = total > 0 ? `${pct.toFixed(0)}%` : '—';
+  });
+}
 
+function renderParamsSection(container, params, scopeId) {
   container.innerHTML = `
     <div class="section-heading">
       <h2>Evaluation parameters</h2>
-      <span class="weight-total ${totalClass}">sum of weights: ${total.toFixed(1)} / 10</span>
+      <span class="weight-total">relative weights · auto-normalized</span>
     </div>
-    <div class="section-hint">Anyone can add the criterion they evaluate and the weight they give it, out of 10.</div>
+    <div class="section-hint">Add each criterion and how important it is — any positive number. Weights don't need to add up to anything; the score uses each one's share of the total, shown as % below.</div>
     <div class="card">
       <div id="param-rows"></div>
       <form class="add-row-form" id="add-param-form">
         <input type="text" name="name" placeholder="Parameter name (e.g. years of experience)" required />
-        <input type="number" name="weight" class="weight-field" min="0" max="10" step="0.5" placeholder="weight" required />
+        <input type="number" name="weight" class="weight-field" min="0" step="any" placeholder="importance" required />
         <input type="text" name="added_by" placeholder="added by" />
         <button type="submit" title="Add">+</button>
       </form>
@@ -168,6 +197,7 @@ function renderParamsSection(container, params, scopeId) {
     rowsEl.innerHTML = `<div class="empty-state">No parameters in this folder yet.</div>`;
   } else {
     params.forEach(p => rowsEl.appendChild(buildParamRow(p, scopeId)));
+    recomputeWeightNormalization(container.querySelector('.card'));
   }
 
   container.querySelector('#add-param-form').addEventListener('submit', async (e) => {
@@ -191,8 +221,9 @@ function buildParamRow(p, scopeId) {
   row.innerHTML = `
     <input class="param-name" value="${escapeHtml(p.name)}" />
     <div class="weight-control">
-      <div class="weight-bar"><div class="weight-bar-fill" style="width:${(p.weight / 10) * 100}%"></div></div>
-      <input class="weight-input" type="number" min="0" max="10" step="0.5" value="${p.weight}" />
+      <div class="weight-bar"><div class="weight-bar-fill" style="width:0%"></div></div>
+      <input class="weight-input" type="number" min="0" step="any" value="${p.weight}" />
+      <span class="weight-pct" title="Share of the total weight">—</span>
     </div>
     <input class="added-by" value="${escapeHtml(p.added_by || '')}" placeholder="added by" />
     <button class="row-delete" title="Delete">×</button>
@@ -200,7 +231,6 @@ function buildParamRow(p, scopeId) {
 
   const nameInput = row.querySelector('.param-name');
   const weightInput = row.querySelector('.weight-input');
-  const weightFill = row.querySelector('.weight-bar-fill');
   const addedByInput = row.querySelector('.added-by');
   const deleteBtn = row.querySelector('.row-delete');
 
@@ -213,8 +243,7 @@ function buildParamRow(p, scopeId) {
   nameInput.addEventListener('change', () => save({ name: nameInput.value.trim() }));
   addedByInput.addEventListener('change', () => save({ added_by: addedByInput.value.trim() }));
   weightInput.addEventListener('input', () => {
-    const w = Number(weightInput.value);
-    weightFill.style.width = `${(w / 10) * 100}%`;
+    recomputeWeightNormalization(row.closest('.card'));
   });
   weightInput.addEventListener('change', async () => {
     await save({ weight: Number(weightInput.value) });
@@ -231,17 +260,31 @@ function buildParamRow(p, scopeId) {
   return row;
 }
 
+// Compact "Expects: True / False" select — the answer that counts as a pass.
+function expectsSelect(expected) {
+  const isTrue = expected === undefined || expected === null ? true : !!expected;
+  return `
+    <label class="expects-control" title="The answer that counts as a pass for this question">
+      <span class="expects-label">Expects</span>
+      <select class="expects-select" name="expected_answer">
+        <option value="1"${isTrue ? ' selected' : ''}>True</option>
+        <option value="0"${!isTrue ? ' selected' : ''}>False</option>
+      </select>
+    </label>`;
+}
+
 function renderKillerSection(container, killers, jobId) {
   container.innerHTML = `
     <div class="section-heading">
       <h2>Killer questions</h2>
     </div>
-    <div class="section-hint">Questions the interview agent will use to quickly rule out an already-qualified candidate.</div>
+    <div class="section-hint">Questions the interview agent will use to quickly rule out an already-qualified candidate. “Expects” is the answer that counts as a pass — set it to False when a “no” is the good answer.</div>
     <div class="killer-list" id="killer-list"></div>
     <form class="add-killer-form" id="add-killer-form">
       <textarea name="question" placeholder="Write the killer question…" required></textarea>
       <input type="text" name="added_by" placeholder="added by" />
-      <button type="submit">Add</button>
+      ${expectsSelect(true)}
+      <button type="submit" title="Add">+</button>
     </form>
   `;
 
@@ -253,12 +296,20 @@ function renderKillerSection(container, killers, jobId) {
       const card = document.createElement('div');
       card.className = 'killer-card';
       card.innerHTML = `
-        <div>
+        <div class="avatar">${escapeHtml(initials(k.added_by || 'anonymous'))}</div>
+        <div class="killer-body">
           <div class="killer-text">${escapeHtml(k.question)}</div>
           <div class="killer-meta">added by ${escapeHtml(k.added_by || 'anonymous')}</div>
         </div>
+        ${expectsSelect(k.expected_answer)}
         <button class="row-delete" title="Delete">×</button>
       `;
+      card.querySelector('.expects-select').addEventListener('change', async (e) => {
+        try {
+          await api(`/killer-questions/${k.id}`, { method: 'PUT', body: JSON.stringify({ expected_answer: Number(e.target.value) }) });
+          showToast('Expected answer updated');
+        } catch (err) { showToast(err.message, true); }
+      });
       card.querySelector('.row-delete').addEventListener('click', async () => {
         try {
           await api(`/killer-questions/${k.id}`, { method: 'DELETE' });
@@ -275,9 +326,10 @@ function renderKillerSection(container, killers, jobId) {
     const form = e.target;
     const question = form.question.value.trim();
     const added_by = form.added_by.value.trim();
+    const expected_answer = Number(form.expected_answer.value);
     if (!question) return;
     try {
-      await api(`/jobs/${jobId}/killer-questions`, { method: 'POST', body: JSON.stringify({ question, added_by }) });
+      await api(`/jobs/${jobId}/killer-questions`, { method: 'POST', body: JSON.stringify({ question, added_by, expected_answer }) });
       showToast('Killer question added');
       await renderContent();
     } catch (err) { showToast(err.message, true); }
@@ -304,6 +356,7 @@ function setSection(section) {
   state.section = section;
   document.getElementById('section-screening').classList.toggle('active', section === 'screening');
   document.getElementById('section-recruiters').classList.toggle('active', section === 'recruiters');
+  document.getElementById('nav-settings').classList.remove('active');
   document.getElementById('screening-section').style.display = section === 'screening' ? '' : 'none';
   document.getElementById('recruiters-section').style.display = section === 'recruiters' ? '' : 'none';
   renderContent();
@@ -314,6 +367,7 @@ document.getElementById('section-recruiters').addEventListener('click', async ()
   await loadRecruiterJobs();
   setSection('recruiters');
 });
+document.getElementById('nav-settings').addEventListener('click', () => setSettingsView());
 
 // ================= RECRUITERS =================
 
@@ -494,7 +548,7 @@ function fmtDate(iso) {
 
 function scoreClass(score) {
   if (score == null) return '';
-  return score >= 8 ? 'pass' : 'fail';
+  return score >= passThreshold() ? 'pass' : 'fail';
 }
 
 async function renderHistoryList() {
@@ -528,7 +582,10 @@ async function renderHistoryList() {
       : '<span class="pill muted">—</span>';
     return `
       <button class="history-row history-item" data-app="${escapeHtml(r.application_id)}">
-        <div class="mono">${escapeHtml(r.application_id)}</div>
+        <div class="hist-app">
+          <span class="avatar">${escapeHtml(initials(r.job_name || r.application_id))}</span>
+          <span class="mono">${escapeHtml(r.application_id)}</span>
+        </div>
         <div>${escapeHtml(r.job_name || '—')}</div>
         <div>${pre}</div>
         <div>${iv}</div>
@@ -545,19 +602,21 @@ async function renderHistoryList() {
   });
 }
 
-// Horizontal score bar (0–10) with the 8/10 pass threshold marked.
+// Horizontal score bar (0–10) with the configurable pass threshold marked.
 function scoreGauge(score, label) {
+  const threshold = passThreshold();
   const s = score == null ? 0 : Math.max(0, Math.min(10, score));
   const pct = (s / 10) * 100;
-  const cls = score == null ? 'muted' : (score >= 8 ? 'pass' : 'fail');
+  const threshPct = (Math.max(0, Math.min(10, threshold)) / 10) * 100;
+  const cls = score == null ? 'muted' : (score >= threshold ? 'pass' : 'fail');
   return `
     <div class="chart-block">
       <div class="chart-title">${escapeHtml(label)}</div>
       <div class="gauge">
         <div class="gauge-fill ${cls}" style="width:${pct}%"></div>
-        <div class="gauge-threshold" style="left:80%" title="Pass threshold: 8/10"></div>
+        <div class="gauge-threshold" style="left:${threshPct}%" title="Pass threshold: ${threshold}/10"></div>
       </div>
-      <div class="gauge-scale"><span>0</span><span class="gauge-mark">8 · pass</span><span>10</span></div>
+      <div class="gauge-scale"><span>0</span><span class="gauge-mark">pass ≥ ${threshold}</span><span>10</span></div>
       <div class="chart-value ${cls}">${score == null ? 'No score' : score + ' / 10'}</div>
     </div>`;
 }
@@ -585,10 +644,15 @@ function coverageDonut(asked, total) {
     </div>`;
 }
 
-function answerChip(answer) {
-  if (answer === true) return '<span class="ans ans-yes">TRUE</span>';
-  if (answer === false) return '<span class="ans ans-no">FALSE</span>';
-  return '<span class="ans ans-na">not asked</span>';
+// Pass/fail is whether the answer MATCHES the question's expected answer — not
+// whether it's simply "true". expected null (e.g. a since-deleted question)
+// means we can't judge, so show the raw answer without a verdict.
+function answerChip(answer, expected) {
+  if (answer !== true && answer !== false) return '<span class="ans ans-na">not asked</span>';
+  const label = answer ? 'TRUE' : 'FALSE';
+  if (expected === null || expected === undefined) return `<span class="ans ans-na">${label}</span>`;
+  const matched = answer === expected;
+  return `<span class="ans ${matched ? 'ans-yes' : 'ans-no'}">${label} · ${matched ? 'pass' : 'fail'}</span>`;
 }
 
 async function renderHistoryDetail(applicationId) {
@@ -640,8 +704,8 @@ async function renderHistoryDetail(applicationId) {
     ? `<div class="card">
         ${d.questions.map((q) => `
           <div class="q-row">
-            <div class="q-text">${escapeHtml(q.text)}${q.weight != null && q.weight !== 1 ? ` <span class="q-weight mono">×${q.weight}</span>` : ''}</div>
-            <div>${answerChip(q.answer)}</div>
+            <div class="q-text">${escapeHtml(q.text)}${q.weight != null && q.weight !== 1 ? ` <span class="q-weight mono">×${q.weight} weight</span>` : ''}${q.expected_answer === false ? ` <span class="q-weight mono">expects False</span>` : ''}</div>
+            <div>${answerChip(q.answer, q.expected_answer)}</div>
           </div>`).join('')}
       </div>`
     : '<div class="empty-state">No killer questions on record for this job.</div>';
@@ -698,7 +762,182 @@ document.getElementById('nav-history').addEventListener('click', () => {
   setView('history');
 });
 
+async function loadSettings() {
+  try { state.settings = await api('/settings'); }
+  catch { state.settings = null; }
+}
+
+// ================= SETTINGS VIEW =================
+
+function setSettingsView() {
+  state.section = 'settings';
+  document.getElementById('section-screening').classList.remove('active');
+  document.getElementById('section-recruiters').classList.remove('active');
+  document.getElementById('nav-settings').classList.add('active');
+  document.getElementById('screening-section').style.display = 'none';
+  document.getElementById('recruiters-section').style.display = 'none';
+  renderSettingsView();
+}
+
+async function saveSetting(patch, msg) {
+  try {
+    const updated = await api('/settings', { method: 'PUT', body: JSON.stringify(patch) });
+    state.settings = { ...state.settings, ...updated };
+    showToast(msg || 'Setting saved');
+  } catch (err) { showToast(err.message, true); }
+}
+
+async function renderSettingsView() {
+  contentEl.innerHTML = `<div class="empty-state">Loading…</div>`;
+  let s;
+  try {
+    s = await api('/settings');
+    state.settings = s;
+  } catch (err) {
+    contentEl.innerHTML = `<div class="empty-state">Could not load settings: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  const key = s.internal_api_key || {};
+  const ashby = s.ashby || {};
+
+  contentEl.innerHTML = `
+    <div class="folder-label">Workspace</div>
+    <h1 class="folder-title">Settings</h1>
+    <div class="folder-meta">Runtime configuration for scoring and the Agent Interview. Changes apply immediately across the app and the workflows that read from it.</div>
+
+    <div class="section">
+      <div class="section-heading"><h2>Scoring</h2></div>
+      <div class="section-hint">The score a candidate must reach to be marked as passing. Applies to the Agent Interview pass/fail decision and to how Prescreen and Interview scores are shown in History.</div>
+      <div class="card">
+        <div class="setting-row">
+          <div class="setting-label">
+            <div class="setting-title">Pass threshold</div>
+            <div class="setting-desc">Out of 10. A score at or above this counts as a pass.</div>
+          </div>
+          <div class="setting-control">
+            <input type="number" id="set-threshold" min="0" max="10" step="0.5" value="${escapeHtml(String(s.pass_threshold))}" />
+            <span class="setting-unit">/ 10</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-heading"><h2>Agent Interview</h2></div>
+      <div class="section-hint">Controls for the automated interview-call phase.</div>
+      <div class="card">
+        <div class="setting-row">
+          <div class="setting-label">
+            <div class="setting-title">Max call attempts</div>
+            <div class="setting-desc">Zero-engagement retries before an application is archived as unreachable.</div>
+          </div>
+          <div class="setting-control">
+            <input type="number" id="set-attempts" min="1" step="1" value="${escapeHtml(String(s.max_call_attempts))}" />
+            <span class="setting-unit">attempts</span>
+          </div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-label">
+            <div class="setting-title">Call recording</div>
+            <div class="setting-desc">Whether the voice agent records Agent Interview calls (surfaced to the agent on lookup).</div>
+          </div>
+          <div class="setting-control">
+            <label class="toggle">
+              <input type="checkbox" id="set-recording" ${s.call_recording_enabled ? 'checked' : ''} />
+              <span class="toggle-track"><span class="toggle-thumb"></span></span>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-heading"><h2>Ashby connection</h2></div>
+      <div class="section-hint">Read-only. Configured via environment variables on the server.</div>
+      <div class="card">
+        <div class="setting-row">
+          <div class="setting-label">
+            <div class="setting-title">API status</div>
+            <div class="setting-desc">Live connectivity check against the Ashby API.</div>
+          </div>
+          <div class="setting-control" id="ashby-status"><span class="pill muted">Checking…</span></div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-label">
+            <div class="setting-title">Object type</div>
+            <div class="setting-desc">Where interview custom fields live.</div>
+          </div>
+          <div class="setting-control"><span class="settings-value mono">${escapeHtml(ashby.object_type || '—')}</span></div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-label">
+            <div class="setting-title">Interview Score field</div>
+            <div class="setting-desc">Ashby custom field the interview score is written to.</div>
+          </div>
+          <div class="setting-control"><span class="settings-value mono">${escapeHtml(ashby.interview_score_field_id || 'not mapped')}</span></div>
+        </div>
+        <div class="setting-row">
+          <div class="setting-label">
+            <div class="setting-title">Questions Asked field</div>
+            <div class="setting-desc">Ashby custom field the coverage (asked/total) is written to.</div>
+          </div>
+          <div class="setting-control"><span class="settings-value mono">${escapeHtml(ashby.questions_asked_field_id || 'not mapped')}</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-heading"><h2>API access</h2></div>
+      <div class="section-hint">The internal key HappyRobot workflow nodes send as <span class="mono">x-api-key</span>. Read-only — the full value never leaves the server; only a masked form is shown for verification.</div>
+      <div class="card">
+        <div class="setting-row">
+          <div class="setting-label">
+            <div class="setting-title">Internal API key</div>
+            <div class="setting-desc">${key.configured ? 'Configured on the server.' : 'Not configured — endpoints are currently unauthenticated (dev mode).'}</div>
+          </div>
+          <div class="setting-control">
+            ${key.configured
+              ? `<span class="settings-value mono" id="key-value" data-masked="${escapeHtml(key.masked || '')}">${'•'.repeat((key.masked || '').length || 12)}</span>
+                 <button type="button" class="reveal-btn" id="key-reveal">Reveal</button>`
+              : `<span class="pill muted">Not configured</span>`}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  document.getElementById('set-threshold').addEventListener('change', (e) => {
+    saveSetting({ pass_threshold: Number(e.target.value) }, 'Pass threshold updated');
+  });
+  document.getElementById('set-attempts').addEventListener('change', (e) => {
+    saveSetting({ max_call_attempts: Number(e.target.value) }, 'Max attempts updated');
+  });
+  document.getElementById('set-recording').addEventListener('change', (e) => {
+    saveSetting({ call_recording_enabled: e.target.checked }, `Call recording ${e.target.checked ? 'enabled' : 'disabled'}`);
+  });
+
+  const revealBtn = document.getElementById('key-reveal');
+  if (revealBtn) {
+    revealBtn.addEventListener('click', () => {
+      const el = document.getElementById('key-value');
+      const masked = el.dataset.masked || '';
+      if (!el.dataset.shown) { el.textContent = masked; el.dataset.shown = '1'; revealBtn.textContent = 'Hide'; }
+      else { el.textContent = '•'.repeat(masked.length || 12); delete el.dataset.shown; revealBtn.textContent = 'Reveal'; }
+    });
+  }
+
+  // Live Ashby connectivity check (async so the page renders instantly).
+  const statusEl = document.getElementById('ashby-status');
+  api('/settings/ashby-status').then((st) => {
+    if (!st.configured) { statusEl.innerHTML = `<span class="pill muted">Not configured</span>`; return; }
+    statusEl.innerHTML = st.connected
+      ? `<span class="pill pass">Connected</span>`
+      : `<span class="pill fail">Not connected</span>${st.error ? ` <span class="setting-desc">${escapeHtml(st.error)}</span>` : ''}`;
+  }).catch(() => { statusEl.innerHTML = `<span class="pill fail">Check failed</span>`; });
+}
+
 (async function init() {
-  await loadJobs();
+  await Promise.all([loadJobs(), loadSettings()]);
   await renderContent();
 })();

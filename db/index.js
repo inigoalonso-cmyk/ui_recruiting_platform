@@ -31,13 +31,26 @@ CREATE TABLE IF NOT EXISTS parameters (
 -- killer_questions are the true/false criteria the Agent Interview phase asks
 -- verbally. weight lets the interview score be a weighted average (default 1 =
 -- equal weighting); recruiters keep entering questions with no extra fields.
+-- expected_answer is the answer that COUNTS AS A PASS for this question: some
+-- questions are phrased so the desired answer is "false" (e.g. "Any restriction
+-- that would stop you starting in 2 weeks?"). Defaults to 1 (true) so existing
+-- rows keep the historical "true = pass" behavior.
 CREATE TABLE IF NOT EXISTS killer_questions (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
   question TEXT NOT NULL,
   weight REAL NOT NULL DEFAULT 1 CHECK (weight >= 0),
+  expected_answer INTEGER NOT NULL DEFAULT 1 CHECK (expected_answer IN (0, 1)),
   added_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Runtime-editable app settings (single value per key), edited from the
+-- Settings page rather than env vars so recruiters can change them live.
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- Prescreen (Phase 1) results land here.
@@ -124,5 +137,16 @@ function ensureColumn(table, column, ddl) {
 
 // Older DBs have killer_questions without a weight column.
 ensureColumn('killer_questions', 'weight', 'weight REAL NOT NULL DEFAULT 1');
+// Older DBs predate the per-question expected answer (Part 1). Default 1 (true)
+// preserves the historical "true = pass" behavior for existing questions.
+ensureColumn('killer_questions', 'expected_answer', 'expected_answer INTEGER NOT NULL DEFAULT 1');
+
+// Seed settings defaults once (INSERT OR IGNORE keeps user-edited values).
+// call_recording_enabled seeds from the legacy env var so behavior is unchanged
+// on first boot; after that it's controlled from the Settings page.
+const seedSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
+seedSetting.run('pass_threshold', '8');
+seedSetting.run('max_call_attempts', '3');
+seedSetting.run('call_recording_enabled', process.env.INTERVIEW_RECORDING_ENABLED === 'true' ? '1' : '0');
 
 module.exports = db;

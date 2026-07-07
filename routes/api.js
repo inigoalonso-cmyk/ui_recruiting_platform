@@ -2,8 +2,34 @@ const express = require('express');
 const { v4: uuid } = require('uuid');
 const db = require('../db');
 const ashby = require('./ashby');
+const { scoreAnswers } = require('./scoring');
 
 const router = express.Router();
+
+// ---------- Runtime settings (editable from the Settings page) ----------
+const SETTING_DEFAULTS = { pass_threshold: '8', max_call_attempts: '3', call_recording_enabled: '0' };
+
+function getSetting(key) {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  return row ? row.value : SETTING_DEFAULTS[key];
+}
+function setSetting(key, value) {
+  db.prepare(`
+    INSERT INTO settings (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+  `).run(key, String(value));
+}
+function getPassThreshold() {
+  const n = Number(getSetting('pass_threshold'));
+  return Number.isFinite(n) ? n : 8;
+}
+function getMaxCallAttempts() {
+  const n = parseInt(getSetting('max_call_attempts'), 10);
+  return Number.isInteger(n) && n > 0 ? n : 3;
+}
+function getRecordingEnabled() {
+  return getSetting('call_recording_enabled') === '1';
+}
 
 // ---------- Middleware: protect endpoints called by external workflows (Happy Robot) ----------
 function requireInternalKey(req, res, next) {
@@ -58,7 +84,7 @@ router.post('/jobs/:jobId/parameters', (req, res) => {
   const { name, weight, added_by } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
   const w = Number(weight);
-  if (Number.isNaN(w) || w < 0 || w > 10) return res.status(400).json({ error: 'weight must be between 0 and 10' });
+  if (Number.isNaN(w) || w < 0) return res.status(400).json({ error: 'weight must be a non-negative number' });
   const id = uuid();
   db.prepare('INSERT INTO parameters (id, job_id, name, weight, added_by) VALUES (?, ?, ?, ?, ?)')
     .run(id, jobId, name.trim(), w, added_by || null);
@@ -70,7 +96,7 @@ router.put('/parameters/:id', (req, res) => {
   const existing = db.prepare('SELECT * FROM parameters WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'parameter not found' });
   const w = weight !== undefined ? Number(weight) : existing.weight;
-  if (Number.isNaN(w) || w < 0 || w > 10) return res.status(400).json({ error: 'weight must be between 0 and 10' });
+  if (Number.isNaN(w) || w < 0) return res.status(400).json({ error: 'weight must be a non-negative number' });
   db.prepare('UPDATE parameters SET name = COALESCE(?, name), weight = ? WHERE id = ?')
     .run(name || null, w, req.params.id);
   res.json(db.prepare('SELECT * FROM parameters WHERE id = ?').get(req.params.id));
@@ -87,17 +113,51 @@ router.get('/jobs/:jobId/killer-questions', (req, res) => {
   res.json(rows);
 });
 
+// Coerce a variety of truthy/falsy JSON shapes into 1/0 (defaulting to true).
+function toExpected(v) {
+  if (v === undefined || v === null || v === '') return 1;
+  if (v === true || v === 1 || v === '1' || v === 'true') return 1;
+  if (v === false || v === 0 || v === '0' || v === 'false') return 0;
+  return 1;
+}
+
 router.post('/jobs/:jobId/killer-questions', (req, res) => {
-  const { question, added_by, weight } = req.body;
+  const { question, added_by, weight, expected_answer } = req.body;
   if (!question || !question.trim()) return res.status(400).json({ error: 'question is required' });
   // weight is optional (defaults to 1); the interview phase uses it for a
   // weighted score, but recruiters don't have to set it.
   const w = weight === undefined || weight === null || weight === '' ? 1 : Number(weight);
   if (Number.isNaN(w) || w < 0) return res.status(400).json({ error: 'weight must be a non-negative number' });
+  const expected = toExpected(expected_answer); // defaults to 1 (true)
   const id = uuid();
-  db.prepare('INSERT INTO killer_questions (id, job_id, question, weight, added_by) VALUES (?, ?, ?, ?, ?)')
-    .run(id, req.params.jobId, question.trim(), w, added_by || null);
+  db.prepare('INSERT INTO killer_questions (id, job_id, question, weight, expected_answer, added_by) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(id, req.params.jobId, question.trim(), w, expected, added_by || null);
   res.status(201).json(db.prepare('SELECT * FROM killer_questions WHERE id = ?').get(id));
+});
+
+router.put('/killer-questions/:id', (req, res) => {
+  const existing = db.prepare('SELECT * FROM killer_questions WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'killer question not found' });
+  const { question, added_by, weight, expected_answer } = req.body;
+  if (question !== undefined && !question.trim()) return res.status(400).json({ error: 'question cannot be empty' });
+  const w = weight === undefined || weight === null || weight === '' ? existing.weight : Number(weight);
+  if (Number.isNaN(w) || w < 0) return res.status(400).json({ error: 'weight must be a non-negative number' });
+  const expected = expected_answer === undefined ? existing.expected_answer : toExpected(expected_answer);
+  db.prepare(`
+    UPDATE killer_questions SET
+      question = COALESCE(?, question),
+      weight = ?,
+      expected_answer = ?,
+      added_by = ?
+    WHERE id = ?
+  `).run(
+    question !== undefined ? question.trim() : null,
+    w,
+    expected,
+    added_by !== undefined ? (added_by || null) : existing.added_by,
+    req.params.id,
+  );
+  res.json(db.prepare('SELECT * FROM killer_questions WHERE id = ?').get(req.params.id));
 });
 
 router.delete('/killer-questions/:id', (req, res) => {
@@ -114,10 +174,21 @@ router.get('/jobs/:jobId/evaluation-config', requireInternalKey, (req, res) => {
   const jobParams = db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ?').all(job.id);
   const killerQuestions = db.prepare('SELECT question, added_by FROM killer_questions WHERE job_id = ?').all(job.id);
 
+  // Weights are relative importance, not a fixed /10 scale. Normalize each
+  // criterion by the total across all parameters that apply to this job
+  // (general + job-specific) so effective_weight is its proportion of the
+  // final score and the set sums to 1. Consumers should use effective_weight.
+  const weightTotal = [...generalParams, ...jobParams].reduce((sum, p) => sum + p.weight, 0);
+  const withEffective = (p) => ({
+    ...p,
+    effective_weight: weightTotal > 0 ? p.weight / weightTotal : 0,
+  });
+
   res.json({
     job: { id: job.id, name: job.name, ashby_job_id: job.ashby_job_id },
-    general_parameters: generalParams,
-    job_parameters: jobParams,
+    weight_total: weightTotal,
+    general_parameters: generalParams.map(withEffective),
+    job_parameters: jobParams.map(withEffective),
     killer_questions: killerQuestions,
   });
 });
@@ -209,21 +280,16 @@ function touchInterviewState(applicationId, jobId) {
 
 // Deterministic weighted score over the questions that were actually asked.
 // answers: [{ question_id, answer: true | false | null }]. null = not asked.
+// A question passes when its answer matches its expected_answer (see scoring.js).
 function computeInterviewScore(answers) {
-  let weightedTrue = 0;
-  let weightedAsked = 0;
-  let asked = 0;
+  const questionMap = {};
   for (const a of answers) {
-    if (a.answer === true || a.answer === false) {
-      const q = db.prepare('SELECT weight FROM killer_questions WHERE id = ?').get(a.question_id);
-      const w = q && q.weight != null ? q.weight : 1;
-      weightedAsked += w;
-      if (a.answer === true) weightedTrue += w;
-      asked += 1;
+    if (!(a.question_id in questionMap)) {
+      const q = db.prepare('SELECT weight, expected_answer FROM killer_questions WHERE id = ?').get(a.question_id);
+      if (q) questionMap[a.question_id] = { weight: q.weight, expected_answer: q.expected_answer };
     }
   }
-  const score = weightedAsked > 0 ? (weightedTrue / weightedAsked) * 10 : 0;
-  return { score: Math.round(score * 100) / 100, asked };
+  return scoreAnswers(answers, questionMap);
 }
 
 // GET /interview/questions?applicationId=...[&jobId=...]
@@ -244,7 +310,10 @@ router.get('/interview/questions', requireInternalKey, async (req, res) => {
 });
 
 // POST /interview/attempts/:applicationId/increment
-// Atomically bumps the zero-engagement (no answers captured) counter.
+// Atomically bumps the zero-engagement (no answers captured) counter. Returns
+// the configured limit and whether it's been reached, so the Happy Robot
+// workflow can archive "unreachable" applications from settings instead of a
+// hardcoded number.
 router.post('/interview/attempts/:applicationId/increment', requireInternalKey, (req, res) => {
   const row = db.prepare(`
     INSERT INTO interview_state (application_id, attempts, stage_entered_at)
@@ -252,7 +321,8 @@ router.post('/interview/attempts/:applicationId/increment', requireInternalKey, 
     ON CONFLICT(application_id) DO UPDATE SET attempts = interview_state.attempts + 1
     RETURNING attempts
   `).get(req.params.applicationId);
-  res.json({ attempts: row.attempts });
+  const maxAttempts = getMaxCallAttempts();
+  res.json({ attempts: row.attempts, maxAttempts, limitReached: row.attempts >= maxAttempts });
 });
 
 // POST /interview/results
@@ -264,7 +334,7 @@ router.post('/interview/results', requireInternalKey, async (req, res) => {
   if (!Array.isArray(answers)) return res.status(400).json({ error: 'answers must be an array' });
 
   const { score, asked } = computeInterviewScore(answers);
-  const passed = score >= 8;
+  const passed = score >= getPassThreshold();
 
   // Derive the job (for coverage total) from the answered questions, falling
   // back to cached interview state.
@@ -342,7 +412,7 @@ router.get('/interview/lookup', requireInternalKey, async (req, res) => {
 
   const agentStageId = process.env.ASHBY_AGENT_INTERVIEW_STAGE_ID || null;
   const agentStageName = (process.env.ASHBY_AGENT_INTERVIEW_STAGE_NAME || 'Agent Interview').toLowerCase();
-  const recordingEnabled = process.env.INTERVIEW_RECORDING_ENABLED === 'true';
+  const recordingEnabled = getRecordingEnabled();
 
   try {
     const candidates = await ashby.searchCandidatesByPhone(phone);
@@ -450,7 +520,7 @@ router.get('/applications/:applicationId/history', (req, res) => {
   const jobId = (interview && interview.job_id) || (prescreen && prescreen.job_id) || null;
   const job = jobId ? db.prepare('SELECT id, name FROM jobs WHERE id = ?').get(jobId) : null;
   const questions = jobId
-    ? db.prepare('SELECT id, question AS text, weight FROM killer_questions WHERE job_id = ? ORDER BY created_at').all(jobId)
+    ? db.prepare('SELECT id, question AS text, weight, expected_answer FROM killer_questions WHERE job_id = ? ORDER BY created_at').all(jobId)
     : [];
 
   let answers = [];
@@ -460,12 +530,13 @@ router.get('/applications/:applicationId/history', (req, res) => {
   const answerByQ = Object.fromEntries(answers.map((a) => [a.question_id, a.answer]));
   const questionResults = questions.map((q) => ({
     id: q.id, text: q.text, weight: q.weight,
+    expected_answer: q.expected_answer === null || q.expected_answer === undefined ? true : !!q.expected_answer,
     answer: q.id in answerByQ ? answerByQ[q.id] : null,
   }));
-  // Preserve answers whose question was deleted after the call.
+  // Preserve answers whose question was deleted after the call (expected unknown).
   for (const a of answers) {
     if (!questions.some((q) => q.id === a.question_id)) {
-      questionResults.push({ id: a.question_id, text: '(question removed)', weight: null, answer: a.answer });
+      questionResults.push({ id: a.question_id, text: '(question removed)', weight: null, expected_answer: null, answer: a.answer });
     }
   }
 
@@ -619,6 +690,81 @@ router.get('/recruiters', requireInternalKey, (req, res) => {
     recruiterName: recruiter.name,
     recruiterEmail: recruiter.email,
     calendarLink: recruiter.calendar_link,
+  });
+});
+
+// ================= SETTINGS =================
+// Runtime-editable settings + read-only integration status for the Settings
+// page. Like the rest of the recruiter UI, GET/PUT are ungated (this app has no
+// user login). Secrets are never returned in full: the internal API key is
+// masked server-side and the full value never leaves the process.
+
+function maskSecret(value) {
+  if (!value) return null;
+  if (value.length <= 8) return '•'.repeat(value.length);
+  return `${value.slice(0, 4)}${'•'.repeat(Math.max(4, value.length - 8))}${value.slice(-4)}`;
+}
+
+// GET /settings — current values + integration status (no live network calls).
+router.get('/settings', (req, res) => {
+  const internalKey = process.env.INTERNAL_API_KEY || '';
+  res.json({
+    pass_threshold: getPassThreshold(),
+    max_call_attempts: getMaxCallAttempts(),
+    call_recording_enabled: getRecordingEnabled(),
+    ashby: {
+      configured: !!process.env.ASHBY_API_KEY,
+      object_type: process.env.ASHBY_INTERVIEW_OBJECT_TYPE || 'Application',
+      interview_score_field_id: process.env.ASHBY_INTERVIEW_SCORE_FIELD_ID || null,
+      questions_asked_field_id: process.env.ASHBY_INTERVIEW_COVERAGE_FIELD_ID || null,
+    },
+    internal_api_key: {
+      configured: !!internalKey,
+      masked: maskSecret(internalKey),
+    },
+  });
+});
+
+// GET /settings/ashby-status — best-effort live connectivity check (own call so
+// the Settings page can render instantly and load this asynchronously).
+router.get('/settings/ashby-status', async (req, res) => {
+  if (!process.env.ASHBY_API_KEY) {
+    return res.json({ configured: false, connected: false, error: 'ASHBY_API_KEY is not set' });
+  }
+  try {
+    await ashby.listJobs();
+    res.json({ configured: true, connected: true, error: null });
+  } catch (err) {
+    res.json({ configured: true, connected: false, error: err.message });
+  }
+});
+
+// PUT /settings — update editable settings; validates each field.
+router.put('/settings', (req, res) => {
+  const { pass_threshold, max_call_attempts, call_recording_enabled } = req.body || {};
+
+  if (pass_threshold !== undefined) {
+    const n = Number(pass_threshold);
+    if (!Number.isFinite(n) || n < 0 || n > 10) {
+      return res.status(400).json({ error: 'pass_threshold must be a number between 0 and 10' });
+    }
+    setSetting('pass_threshold', n);
+  }
+  if (max_call_attempts !== undefined) {
+    const n = Number(max_call_attempts);
+    if (!Number.isInteger(n) || n < 1) {
+      return res.status(400).json({ error: 'max_call_attempts must be an integer of at least 1' });
+    }
+    setSetting('max_call_attempts', n);
+  }
+  if (call_recording_enabled !== undefined) {
+    setSetting('call_recording_enabled', call_recording_enabled ? '1' : '0');
+  }
+
+  res.json({
+    pass_threshold: getPassThreshold(),
+    max_call_attempts: getMaxCallAttempts(),
+    call_recording_enabled: getRecordingEnabled(),
   });
 });
 
