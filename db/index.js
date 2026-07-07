@@ -9,6 +9,10 @@ if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const db = new Database(path.join(DATA_DIR, 'platform.db'));
 db.pragma('journal_mode = WAL');
+// Enforce declared foreign keys (SQLite defaults this OFF). Without it, the
+// ON DELETE CASCADE on parameters/killer_questions/recruiters never fires, so
+// deleting a job or recruiter folder would orphan its child rows.
+db.pragma('foreign_keys = ON');
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS jobs (

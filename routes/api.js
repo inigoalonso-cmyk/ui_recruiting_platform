@@ -90,6 +90,10 @@ router.post('/jobs/:jobId/parameters', (req, res) => {
   const jobId = req.params.jobId === 'general' ? null : req.params.jobId;
   const { name, weight, added_by } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
+  // 'general' (jobId null) is valid; any other jobId must be a real job.
+  if (jobId !== null && !db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(jobId)) {
+    return res.status(404).json({ error: 'job not found' });
+  }
   const w = Number(weight);
   if (Number.isNaN(w) || w < 0) return res.status(400).json({ error: 'weight must be a non-negative number' });
   const id = uuid();
@@ -131,6 +135,11 @@ function toExpected(v) {
 router.post('/jobs/:jobId/killer-questions', (req, res) => {
   const { question, added_by, weight, expected_answer } = req.body;
   if (!question || !question.trim()) return res.status(400).json({ error: 'question is required' });
+  // Killer questions are per real job (no 'general'). Reject unknown jobs with
+  // a clean 404 rather than letting the FK constraint surface as a 500.
+  if (!db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(req.params.jobId)) {
+    return res.status(404).json({ error: 'job not found' });
+  }
   // weight is optional (defaults to 1); the interview phase uses it for a
   // weighted score, but recruiters don't have to set it.
   const w = weight === undefined || weight === null || weight === '' ? 1 : Number(weight);
