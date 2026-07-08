@@ -125,8 +125,14 @@
         await onConfirm();
         close();
       } catch (err) {
+        // Surface the failure instead of silently swallowing it: the write did
+        // NOT persist, so the user must know to retry rather than assume it
+        // saved. Keep the dialog open (buttons re-enabled) so they can retry.
         confirmBtn.disabled = false;
         cancelBtn.disabled = false;
+        if (typeof window.showToast === 'function') {
+          window.showToast((err && err.message) || 'Action failed — please try again', true);
+        }
       }
     });
     document.addEventListener('keydown', onKey, true);

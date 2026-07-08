@@ -7,7 +7,28 @@ const fs = require('fs');
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const db = new Database(path.join(DATA_DIR, 'platform.db'));
+const DB_PATH = path.join(DATA_DIR, 'platform.db');
+
+// Durability guard: this app stores ALL data (jobs, Job Info facts, screening
+// parameters, killer questions, recruiters) in this one SQLite file. On Railway
+// the container filesystem is EPHEMERAL — if DATA_DIR is not pointed at a mounted
+// persistent volume, the file (and every recruiter edit) is wiped on each
+// redeploy. Silently falling back to a local ./data dir is exactly how that data
+// loss goes unnoticed, so make the situation loud in the logs at boot.
+const onRailway = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_SERVICE_ID);
+if (!process.env.DATA_DIR) {
+  const warning =
+    `[db] DATA_DIR is not set — using "${DATA_DIR}". This path is on the ` +
+    `local/container filesystem. On Railway that is EPHEMERAL: all Job Info, ` +
+    `screening and recruiter data will be WIPED on the next redeploy. Set ` +
+    `DATA_DIR to a mounted volume path (e.g. /data) so data survives deploys.`;
+  if (onRailway) console.warn(`\n${'!'.repeat(72)}\n${warning}\n${'!'.repeat(72)}\n`);
+  else console.warn(`[db] ${warning}`);
+} else {
+  console.log(`[db] SQLite at ${DB_PATH} (DATA_DIR=${process.env.DATA_DIR}). Ensure a persistent volume is mounted at this path on Railway so data survives redeploys.`);
+}
+
+const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 // Enforce declared foreign keys (SQLite defaults this OFF). Without it, the
 // ON DELETE CASCADE on parameters/killer_questions/recruiters never fires, so
