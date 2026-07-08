@@ -18,7 +18,8 @@ public/                -> UI (HTML/CSS/JS, no build step)
 2. On Railway: **New Project → Deploy from GitHub repo**.
 3. Add a **Volume** mounted at `/data` (so the SQLite database is not wiped on every redeploy) and set `DATA_DIR=/data` in the environment variables.
 4. Configure the environment variables (see `.env.example`):
-   - `INTERNAL_API_KEY` — key that Happy Robot will send in the `x-api-key` header.
+   - `INTERNAL_API_KEY` — key that Happy Robot will send in the `x-api-key` header for scoring/interview/recruiter calls.
+   - `JOBBOT_API_KEY` — separate **read-only** key for the JobBot API (`/api/jobbot/*`), also sent as `x-api-key`. Keep it distinct from `INTERNAL_API_KEY`.
    - `ASHBY_API_KEY` — your Ashby API key (Ashby → Settings → API).
    - `ASHBY_SCORE_FIELD_ID` — id of the custom field in Ashby where the score is stored (create it in Ashby and use `customField.list` to get its id, or copy it from the Ashby UI if it shows it).
    - `ASHBY_SCORE_OBJECT_TYPE` — `Application` or `Candidate`, depending on which object type you created the custom field on.
@@ -100,6 +101,75 @@ fields configured via `ASHBY_INTERVIEW_SCORE_FIELD_ID` / `ASHBY_INTERVIEW_COVERA
 > name/email; phone search is not confirmed. The endpoint does a best-effort live
 > Ashby lookup (isolated in `routes/ashby.js`) and returns `{ matched: false }`
 > when nothing is found — verify the Ashby request shape before relying on it.
+
+### 4. JobBot read-only API (fetch a job's facts at runtime)
+
+The external HappyRobot voice/chat agent ("JobBot") reads job facts live from
+this app so recruiters can edit facts in the UI and have the agent use the latest
+data with **no redeploy**. These endpoints are **read-only (GET only)** and
+**namespaced under `/api/jobbot`** so they never collide with the UI's own
+`/api/jobs` routes.
+
+All three require an `x-api-key` header matched against a **dedicated, read-only
+`JOBBOT_API_KEY`** — kept **separate from `INTERNAL_API_KEY`** on purpose. This
+key lives inside the third-party HappyRobot workflow platform, so if it ever
+leaks it only exposes read-only job facts, not the general internal key that also
+guards scoring/interview writes. Set `JOBBOT_API_KEY` in `.env` and in Railway's
+env variables. Requests without a valid key get `401`.
+
+```
+GET /api/jobbot/jobs                    -> list every configured job (validate/match a role name)
+GET /api/jobbot/jobs/general            -> the General facts that apply to every job
+GET /api/jobbot/jobs/:titleOrSlug       -> one job's facts, WITH the General facts merged in
+Header: x-api-key: <JOBBOT_API_KEY>
+```
+
+`:titleOrSlug` is resolved (in order) by job id, Ashby job id, exact
+case-insensitive **title**, or derived **slug** (`"Field Engineer"` →
+`field-engineer`).
+
+**`GET /api/jobbot/jobs`**
+```json
+{
+  "jobs": [
+    { "title": "Field Engineer", "slug": "field-engineer", "ashby_job_id": "..." },
+    { "title": "Senior Backend Engineer", "slug": "senior-backend-engineer", "ashby_job_id": null }
+  ]
+}
+```
+
+**`GET /api/jobbot/jobs/general`**
+```json
+{
+  "title": "General",
+  "slug": "general",
+  "facts": [
+    { "label": "Company", "value": "HappyRobot" },
+    { "label": "Benefits", "value": "Health + 401k" }
+  ]
+}
+```
+
+**`GET /api/jobbot/jobs/:titleOrSlug`** — the General facts are **merged in
+automatically** (job-specific facts first, then General), so the caller does
+**not** need to call `/general` separately. `generalFactsMerged: true` documents
+this in the payload.
+```json
+{
+  "title": "Field Engineer",
+  "slug": "field-engineer",
+  "ashby_job_id": "...",
+  "generalFactsMerged": true,
+  "facts": [
+    { "label": "Salary range", "value": "$80k-100k" },
+    { "label": "Location", "value": "Remote (US)" },
+    { "label": "Company", "value": "HappyRobot" },
+    { "label": "Benefits", "value": "Health + 401k" }
+  ]
+}
+```
+
+Unknown job → `404 { "error": "job not found", "titleOrSlug": "..." }`.
 
 ## History tab
 

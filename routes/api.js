@@ -42,6 +42,20 @@ function requireInternalKey(req, res, next) {
   next();
 }
 
+// Separate, read-only key for the external JobBot API (/jobbot/*). Kept distinct
+// from INTERNAL_API_KEY on purpose: it lives inside a third-party workflow
+// platform, so a leak of this key exposes only read-only job facts — not the
+// general internal key that also guards scoring/interview writes.
+function requireJobbotKey(req, res, next) {
+  const configured = process.env.JOBBOT_API_KEY;
+  if (!configured) return next(); // if not configured, we don't block (dev mode)
+  const provided = req.header('x-api-key');
+  if (provided !== configured) {
+    return res.status(401).json({ error: 'invalid or missing x-api-key' });
+  }
+  next();
+}
+
 // ---------- JOBS (folders) ----------
 router.get('/jobs', (req, res) => {
   const jobs = db.prepare('SELECT * FROM jobs ORDER BY created_at DESC').all();
@@ -251,6 +265,77 @@ router.get('/jobinfo/lookup', requireInternalKey, (req, res) => {
     found: true,
     job: { id: job.id, name: job.name, ashby_job_id: job.ashby_job_id || null },
     facts: [...jobFacts, ...generalFacts],
+  });
+});
+
+// ---------- READ-ONLY JOBBOT API (consumed by the external HappyRobot agent) ----------
+// A clean, documented, read-only JSON surface the external HappyRobot voice/chat
+// agent calls at runtime to fetch job facts. Namespaced under /jobbot so it never
+// collides with the UI's own /jobs routes above, and protected by a dedicated
+// read-only key (JOBBOT_API_KEY, see requireJobbotKey) sent as x-api-key —
+// separate from INTERNAL_API_KEY to limit blast radius. GET only — no writes.
+
+// Turn a job name into a URL-safe slug ("Field Engineer" -> "field-engineer").
+function jobSlug(name) {
+  return String(name || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+// Resolve a job by (in order) id, Ashby job id, exact case-insensitive name, or
+// derived slug. Returns the job row ({ id, name, ashby_job_id }) or null.
+function resolveJobByTitleOrSlug(q) {
+  const needle = String(q || '').trim();
+  if (!needle) return null;
+  let job = db.prepare('SELECT id, name, ashby_job_id FROM jobs WHERE id = ? OR ashby_job_id = ?').get(needle, needle);
+  if (!job) job = db.prepare('SELECT id, name, ashby_job_id FROM jobs WHERE lower(trim(name)) = lower(?)').get(needle);
+  if (!job) {
+    const wanted = jobSlug(needle);
+    job = db.prepare('SELECT id, name, ashby_job_id FROM jobs').all().find((j) => jobSlug(j.name) === wanted) || null;
+  }
+  return job;
+}
+
+// General facts (job_id NULL) that apply to every job, in display order.
+function generalFacts() {
+  return db.prepare('SELECT label, value FROM job_info_facts WHERE job_id IS NULL ORDER BY sort_order, created_at').all();
+}
+
+// 1. List every configured job so the caller can validate/match a role name.
+router.get('/jobbot/jobs', requireJobbotKey, (req, res) => {
+  const jobs = db.prepare('SELECT name, ashby_job_id FROM jobs ORDER BY name').all();
+  res.json({
+    jobs: jobs.map((j) => ({
+      title: j.name,
+      slug: jobSlug(j.name),
+      ashby_job_id: j.ashby_job_id || null,
+    })),
+  });
+});
+
+// 3. General facts that apply to every job. Registered BEFORE the :titleOrSlug
+// route below so the literal "general" is never captured as a job name/slug.
+router.get('/jobbot/jobs/general', requireJobbotKey, (req, res) => {
+  res.json({ title: 'General', slug: 'general', facts: generalFacts() });
+});
+
+// 2. Facts for one job, WITH the general facts merged in (job-specific first,
+// then general) — matching the UI copy "JobBot includes these alongside each
+// job's own facts" and the existing /jobinfo/lookup behavior. 404 if unknown.
+router.get('/jobbot/jobs/:titleOrSlug', requireJobbotKey, (req, res) => {
+  const job = resolveJobByTitleOrSlug(req.params.titleOrSlug);
+  if (!job) {
+    return res.status(404).json({ error: 'job not found', titleOrSlug: req.params.titleOrSlug });
+  }
+  const own = db.prepare('SELECT label, value FROM job_info_facts WHERE job_id = ? ORDER BY sort_order, created_at').all(job.id);
+  res.json({
+    title: job.name,
+    slug: jobSlug(job.name),
+    ashby_job_id: job.ashby_job_id || null,
+    generalFactsMerged: true,
+    facts: [...own, ...generalFacts()],
   });
 });
 
