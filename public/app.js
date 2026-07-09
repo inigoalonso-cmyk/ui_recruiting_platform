@@ -15,6 +15,8 @@ const state = {
   expandedFacts: new Set(), // fact ids currently expanded (client-side only)
   historyView: 'timeline', // 'timeline' or 'analytics' sub-view of History
   analyticsJob: '', // '' = all jobs, else a job id, for the analytics funnel
+  jobInfoView: 'facts', // 'facts' or 'suggestions' sub-view of Job Info
+  openSuggestionKey: null, // normalized text of the suggestion whose add form is open
 };
 
 // Pass/fail cutoff, read from settings (falls back to 8 until loaded).
@@ -218,7 +220,11 @@ async function renderContent() {
     return;
   }
   if (state.section === 'jobinfo') {
-    await renderJobInfoView();
+    if (state.jobInfoView === 'suggestions') {
+      await renderSuggestionsView();
+    } else {
+      await renderJobInfoView();
+    }
     return;
   }
   if (state.view === 'history') {
@@ -491,8 +497,42 @@ document.getElementById('section-recruiters').addEventListener('click', async ()
   await loadRecruiterJobs();
   setSection('recruiters');
 });
-document.getElementById('section-jobinfo').addEventListener('click', () => setSection('jobinfo'));
+document.getElementById('section-jobinfo').addEventListener('click', () => {
+  applyJobInfoNav();
+  refreshSuggestionsBadge();
+  setSection('jobinfo');
+});
 document.getElementById('nav-settings').addEventListener('click', () => setSettingsView());
+
+// ---- Job Info sub-nav: Facts / Suggested additions ----
+function applyJobInfoNav() {
+  document.getElementById('nav-jobinfo-facts').classList.toggle('active', state.jobInfoView === 'facts');
+  document.getElementById('nav-jobinfo-suggestions').classList.toggle('active', state.jobInfoView === 'suggestions');
+  // The folder list only applies to Facts; hide it on the Suggested additions view.
+  document.getElementById('jobinfo-facts-nav').style.display = state.jobInfoView === 'facts' ? '' : 'none';
+}
+
+function setJobInfoView(view) {
+  state.jobInfoView = view;
+  state.openSuggestionKey = null;
+  applyJobInfoNav();
+  renderContent();
+}
+
+// Update the little count badge on the "Suggested additions" nav item.
+async function refreshSuggestionsBadge() {
+  const badge = document.getElementById('suggestions-badge');
+  if (!badge) return;
+  try {
+    const data = await api('/unanswered-questions?status=open');
+    const n = data.total_groups || 0;
+    badge.textContent = String(n);
+    badge.style.display = n > 0 ? '' : 'none';
+  } catch { badge.style.display = 'none'; }
+}
+
+document.getElementById('nav-jobinfo-facts').addEventListener('click', () => setJobInfoView('facts'));
+document.getElementById('nav-jobinfo-suggestions').addEventListener('click', () => setJobInfoView('suggestions'));
 
 document.getElementById('new-jobinfo-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -988,6 +1028,155 @@ function buildFactBanner(f) {
     chevron.textContent = nowExpanded ? '˄' : '˅';
   });
   return el;
+}
+
+// ---------- Suggested additions (unanswered questions) ----------
+// Questions JobBot couldn't answer, grouped by exact text and ranked by how
+// often they were asked. Recruiters turn one into a Job Info fact or dismiss it.
+
+async function renderSuggestionsView() {
+  contentEl.innerHTML = `
+    <div class="folder-label">Job Info</div>
+    <h1 class="folder-title">Suggested additions</h1>
+    <div class="folder-meta">Questions JobBot couldn’t answer from the current facts, grouped by exact wording and ranked by how often candidates asked. Add an answer to turn one into a Job Info fact, or dismiss it.</div>
+    <div class="section" id="suggestions-section"><div class="empty-state">Loading…</div></div>`;
+
+  const section = document.getElementById('suggestions-section');
+  let data;
+  try {
+    data = await api('/unanswered-questions?status=open');
+  } catch (err) {
+    section.innerHTML = `<div class="empty-state">Could not load suggestions: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  const groups = data.groups || [];
+  if (!groups.length) {
+    section.innerHTML = `<div class="empty-state">No open questions. When JobBot can’t answer something, it’ll show up here.</div>`;
+    return;
+  }
+
+  section.innerHTML = `
+    <div class="section-heading">
+      <h2>Open questions</h2>
+      <span class="weight-total">${groups.length} ${groups.length === 1 ? 'question' : 'questions'}</span>
+    </div>
+    <div class="suggestion-list" id="suggestion-list"></div>`;
+  const listEl = section.querySelector('#suggestion-list');
+  groups.forEach((g) => listEl.appendChild(buildSuggestionRow(g)));
+}
+
+function buildSuggestionRow(g) {
+  const key = g.ids[0]; // stable identity for the open/closed add form
+  const el = document.createElement('div');
+  el.className = 'suggestion-card';
+
+  const roles = (g.role_labels || []).filter(Boolean);
+  const roleHtml = roles.length
+    ? roles.map((r) => `<span class="suggestion-role">${escapeHtml(r)}</span>`).join('')
+    : '<span class="suggestion-role muted">No role reported</span>';
+
+  el.innerHTML = `
+    <div class="suggestion-main">
+      <div class="suggestion-question">${escapeHtml(g.question_text)}</div>
+      <div class="suggestion-meta">
+        <span class="suggestion-count">asked ${g.count}×</span>
+        ${roleHtml}
+        <span class="suggestion-date mono muted">last ${fmtDate(g.last_seen)}</span>
+      </div>
+    </div>
+    <div class="suggestion-actions">
+      <button type="button" class="btn-add">Add to Job Info</button>
+      <button type="button" class="btn-dismiss">Dismiss</button>
+    </div>`;
+
+  el.querySelector('.btn-add').addEventListener('click', () => {
+    state.openSuggestionKey = state.openSuggestionKey === key ? null : key;
+    renderContent();
+  });
+
+  el.querySelector('.btn-dismiss').addEventListener('click', () => {
+    RowMenu.confirmDialog({
+      title: 'Dismiss question',
+      message: `Dismiss “${g.question_text}”? It won’t show up again. This clears ${g.count} matching open ${g.count === 1 ? 'entry' : 'entries'}.`,
+      confirmLabel: 'Dismiss',
+      onConfirm: async () => {
+        try {
+          await api('/unanswered-questions/dismiss', { method: 'POST', body: JSON.stringify({ ids: g.ids }) });
+          state.openSuggestionKey = null;
+          showToast('Question dismissed');
+          await refreshSuggestionsBadge();
+          await renderContent();
+        } catch (err) { showToast(err.message, true); }
+      },
+    });
+  });
+
+  if (state.openSuggestionKey === key) {
+    el.classList.add('expanded');
+    el.appendChild(buildSuggestionAddForm(g));
+  }
+  return el;
+}
+
+function buildSuggestionAddForm(g) {
+  const form = document.createElement('form');
+  form.className = 'suggestion-add-form';
+
+  // Default the target folder to a job whose name matches a reported role label.
+  const roleLc = (g.role_labels || []).map((r) => r.trim().toLowerCase());
+  const match = state.jobs.find((j) => roleLc.includes(j.name.trim().toLowerCase()));
+  const options = [`<option value="general">General (all jobs)</option>`]
+    .concat(state.jobs.map((j) => `<option value="${escapeHtml(j.id)}"${match && match.id === j.id ? ' selected' : ''}>${escapeHtml(j.name)}</option>`))
+    .join('');
+
+  form.innerHTML = `
+    <div class="suggestion-add-grid">
+      <label class="suggestion-add-field">
+        <span class="setting-desc">Folder</span>
+        <select name="job_id" class="suggestion-folder">${options}</select>
+      </label>
+      <label class="suggestion-add-field">
+        <span class="setting-desc">Label</span>
+        <input type="text" name="label" placeholder="e.g. Visa sponsorship" required />
+      </label>
+      <label class="suggestion-add-field">
+        <span class="setting-desc">Answer (value)</span>
+        <input type="text" name="value" placeholder="The answer JobBot should give" required />
+      </label>
+    </div>
+    <div class="suggestion-add-actions">
+      <button type="submit" class="btn-add">Save fact & resolve</button>
+      <button type="button" class="btn-cancel">Cancel</button>
+    </div>`;
+
+  form.querySelector('.btn-cancel').addEventListener('click', () => {
+    state.openSuggestionKey = null;
+    renderContent();
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const job_id = form.job_id.value;
+    const label = form.label.value.trim();
+    const value = form.value.value.trim();
+    if (!label || !value) { showToast('Label and answer are required', true); return; }
+    try {
+      const r = await api('/unanswered-questions/add-to-job-info', {
+        method: 'POST',
+        body: JSON.stringify({ ids: g.ids, job_id, label, value }),
+      });
+      state.openSuggestionKey = null;
+      showToast(`Fact added · ${r.resolved} ${r.resolved === 1 ? 'question' : 'questions'} resolved`);
+      await refreshSuggestionsBadge();
+      await renderContent();
+    } catch (err) { showToast(err.message, true); }
+  });
+
+  // Don't let clicks inside the form bubble to the card.
+  form.addEventListener('click', (e) => e.stopPropagation());
+  requestAnimationFrame(() => { const l = form.querySelector('input[name="label"]'); if (l) l.focus(); });
+  return form;
 }
 
 // ================= HISTORY VIEW =================

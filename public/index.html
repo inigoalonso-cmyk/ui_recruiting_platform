@@ -75,13 +75,22 @@
     </div>
 
     <div id="jobinfo-section" class="section-panel" style="display:none">
-      <div class="rail-section-label">Folders</div>
-      <div id="jobinfo-folder-list" class="folder-list"></div>
+      <nav class="rail-nav">
+        <button id="nav-jobinfo-facts" class="nav-item active" type="button">Facts</button>
+        <button id="nav-jobinfo-suggestions" class="nav-item" type="button">
+          Suggested additions<span id="suggestions-badge" class="nav-badge" style="display:none">0</span>
+        </button>
+      </nav>
 
-      <form id="new-jobinfo-form" class="new-job-form">
-        <input id="new-jobinfo-name" type="text" placeholder="Job title…" autocomplete="off" />
-        <button type="submit">+ New folder</button>
-      </form>
+      <div id="jobinfo-facts-nav">
+        <div class="rail-section-label">Folders</div>
+        <div id="jobinfo-folder-list" class="folder-list"></div>
+
+        <form id="new-jobinfo-form" class="new-job-form">
+          <input id="new-jobinfo-name" type="text" placeholder="Job title…" autocomplete="off" />
+          <button type="submit">+ New folder</button>
+        </form>
+      </div>
     </div>
   </aside>
 

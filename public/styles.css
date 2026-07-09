@@ -1378,6 +1378,137 @@ html, body {
 .metric-value { font-family: var(--font-mono); font-size: 20px; font-weight: 600; color: var(--text); }
 .metric-label { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
 
+/* ---------- Job Info sub-nav badge ---------- */
+#jobinfo-facts-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  flex: 1;
+  min-height: 0;
+}
+.nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+/* ---------- Suggested additions (unanswered questions) ---------- */
+.suggestion-list { display: flex; flex-direction: column; gap: 10px; }
+.suggestion-card {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 6px 16px rgba(16, 24, 40, 0.05);
+  padding: 14px 16px;
+}
+.suggestion-main { min-width: 0; flex: 1 1 320px; }
+.suggestion-question { font-size: 14px; font-weight: 700; color: var(--text); line-height: 1.35; word-break: break-word; }
+.suggestion-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+.suggestion-count {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 700;
+}
+.suggestion-role {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-alt);
+  color: var(--text-muted);
+  font-weight: 600;
+}
+.suggestion-role.muted { color: var(--text-faint); font-weight: 500; }
+.suggestion-date { font-size: 11.5px; }
+
+.suggestion-actions { display: flex; gap: 8px; flex: 0 0 auto; align-items: center; }
+.suggestion-actions .btn-add,
+.suggestion-add-actions .btn-add {
+  background: var(--dark);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.suggestion-actions .btn-add:hover,
+.suggestion-add-actions .btn-add:hover { background: #000; }
+.suggestion-actions .btn-dismiss,
+.suggestion-add-actions .btn-cancel {
+  background: var(--surface);
+  color: var(--text-muted);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 8px 14px;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.suggestion-actions .btn-dismiss:hover,
+.suggestion-add-actions .btn-cancel:hover { background: var(--surface-alt); color: var(--text); border-color: var(--line-strong); }
+
+/* Inline "Add to Job Info" form revealed under a card. */
+.suggestion-card.expanded { flex-direction: column; align-items: stretch; }
+.suggestion-add-form {
+  flex-basis: 100%;
+  width: 100%;
+  margin-top: 12px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.suggestion-add-grid {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.8fr) 1fr 1.4fr;
+  gap: 12px;
+}
+.suggestion-add-field { display: flex; flex-direction: column; gap: 5px; }
+.suggestion-add-field .setting-desc { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.suggestion-add-field select,
+.suggestion-add-field input {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 9px 11px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-body);
+  font-size: 13px;
+  width: 100%;
+}
+.suggestion-add-field select:focus,
+.suggestion-add-field input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.suggestion-add-actions { display: flex; gap: 8px; margin-top: 12px; }
+
 /* ---------- Responsive ---------- */
 @media (max-width: 860px) {
   .app { grid-template-columns: 78px 200px 1fr; }
@@ -1391,4 +1522,6 @@ html, body {
   .meta-grid { grid-template-columns: 1fr; }
   .add-killer-form { flex-direction: column; }
   .add-killer-form input { width: 100%; }
+  .suggestion-add-grid { grid-template-columns: 1fr; }
+  .suggestion-actions { width: 100%; }
 }

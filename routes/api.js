@@ -56,6 +56,23 @@ function requireJobbotKey(req, res, next) {
   next();
 }
 
+// Separate, WRITE-ONLY key for JobBot to report unanswered questions
+// (POST /jobbot/unanswered-questions ONLY). Deliberately its own least-privilege
+// credential: it can create one unanswered-question row and nothing else — it
+// grants no reads (not even Job Info, which is JOBBOT_API_KEY) and none of the
+// scoring/interview writes guarded by INTERNAL_API_KEY. A leak of this key lets
+// an attacker only enqueue junk "suggested additions" rows a recruiter can
+// dismiss — the smallest possible blast radius for this new surface.
+function requireUnansweredKey(req, res, next) {
+  const configured = process.env.UNANSWERED_QUESTIONS_API_KEY;
+  if (!configured) return next(); // if not configured, we don't block (dev mode)
+  const provided = req.header('x-api-key');
+  if (provided !== configured) {
+    return res.status(401).json({ error: 'invalid or missing x-api-key' });
+  }
+  next();
+}
+
 // ---------- JOBS (folders) ----------
 router.get('/jobs', (req, res) => {
   const jobs = db.prepare('SELECT * FROM jobs ORDER BY created_at DESC').all();
@@ -336,6 +353,159 @@ router.get('/jobbot/jobs/:titleOrSlug', requireJobbotKey, (req, res) => {
     ashby_job_id: job.ashby_job_id || null,
     generalFactsMerged: true,
     facts: [...own, ...generalFacts()],
+  });
+});
+
+// ================= UNANSWERED QUESTIONS (Suggested additions) =================
+// JobBot reports questions it couldn't answer here; recruiters triage them in
+// the "Suggested additions" view and either turn them into Job Info facts or
+// dismiss them. See the unanswered_questions table in db/index.js.
+
+// Normalize question text for exact-match aggregation: trimmed + lower-cased.
+// v1 is deliberately exact-match only — fuzzy/semantic clustering is a v2
+// concern (see the task brief), so this mirrors the case-insensitive/trimmed
+// matching used elsewhere (e.g. job-name lookup) rather than anything smarter.
+function normalizeQuestion(s) {
+  return String(s || '').trim().toLowerCase();
+}
+
+// Coerce a caller-supplied timestamp into SQLite's UTC "YYYY-MM-DD HH:MM:SS"
+// format so it sorts and renders exactly like datetime('now') rows. Returns
+// null when absent/unparseable, in which case the column default is used.
+function toSqliteUtc(ts) {
+  if (ts === undefined || ts === null || ts === '') return null;
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+// POST /jobbot/unanswered-questions  — write-only, guarded by requireUnansweredKey.
+// Body: { role_label?, question, timestamp? }. Records ONE unanswered question.
+// Always the only thing this key can do.
+router.post('/jobbot/unanswered-questions', requireUnansweredKey, (req, res) => {
+  const { role_label, question, timestamp } = req.body || {};
+  if (!question || !String(question).trim()) {
+    return res.status(400).json({ error: 'question is required' });
+  }
+  const id = uuid();
+  const createdAt = toSqliteUtc(timestamp);
+  const label = role_label && String(role_label).trim() ? String(role_label).trim() : null;
+  if (createdAt) {
+    db.prepare(`
+      INSERT INTO unanswered_questions (id, role_label, question_text, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(id, label, String(question).trim(), createdAt, createdAt);
+  } else {
+    db.prepare(`
+      INSERT INTO unanswered_questions (id, role_label, question_text)
+      VALUES (?, ?, ?)
+    `).run(id, label, String(question).trim());
+  }
+  res.status(201).json(db.prepare('SELECT id, role_label, question_text, status, created_at FROM unanswered_questions WHERE id = ?').get(id));
+});
+
+// GET /unanswered-questions?status=open  — recruiter-facing (browser). Groups
+// rows by normalized question text and ranks by frequency (count desc, then
+// most-recent). Each group carries every row id in it so the actions below can
+// resolve/dismiss the whole cluster of duplicates at once.
+router.get('/unanswered-questions', (req, res) => {
+  const status = (req.query.status || 'open').trim();
+  if (!['open', 'resolved', 'dismissed'].includes(status)) {
+    return res.status(400).json({ error: "status must be one of open, resolved, dismissed" });
+  }
+  const rows = db.prepare(
+    'SELECT id, role_label, question_text, created_at FROM unanswered_questions WHERE status = ? ORDER BY created_at DESC'
+  ).all(status);
+
+  const groups = new Map();
+  for (const r of rows) {
+    const key = normalizeQuestion(r.question_text);
+    if (!groups.has(key)) {
+      groups.set(key, {
+        // Representative text = the most recent row's original casing (rows are
+        // pre-sorted newest-first, so the first one we see wins).
+        question_text: r.question_text,
+        count: 0,
+        ids: [],
+        role_labels: [],
+        first_seen: r.created_at,
+        last_seen: r.created_at,
+      });
+    }
+    const g = groups.get(key);
+    g.count += 1;
+    g.ids.push(r.id);
+    if (r.role_label && !g.role_labels.includes(r.role_label)) g.role_labels.push(r.role_label);
+    if (r.created_at < g.first_seen) g.first_seen = r.created_at;
+    if (r.created_at > g.last_seen) g.last_seen = r.created_at;
+  }
+
+  const list = [...groups.values()].sort(
+    (a, b) => b.count - a.count || b.last_seen.localeCompare(a.last_seen)
+  );
+  res.json({ status, total_rows: rows.length, total_groups: list.length, groups: list });
+});
+
+// Guard: pull a clean, de-duplicated list of ids from a request body.
+function readIds(body) {
+  const ids = body && body.ids;
+  if (!Array.isArray(ids)) return null;
+  const clean = [...new Set(ids.map((x) => String(x)).filter(Boolean))];
+  return clean.length ? clean : null;
+}
+
+function markStatus(ids, status) {
+  const stmt = db.prepare("UPDATE unanswered_questions SET status = ?, updated_at = datetime('now') WHERE id = ? AND status = 'open'");
+  const tx = db.transaction((list) => {
+    let n = 0;
+    for (const id of list) n += stmt.run(status, id).changes;
+    return n;
+  });
+  return tx(ids);
+}
+
+// POST /unanswered-questions/dismiss  — { ids: [...] } → status = dismissed.
+router.post('/unanswered-questions/dismiss', (req, res) => {
+  const ids = readIds(req.body);
+  if (!ids) return res.status(400).json({ error: 'ids must be a non-empty array' });
+  const dismissed = markStatus(ids, 'dismissed');
+  res.json({ dismissed });
+});
+
+// POST /unanswered-questions/add-to-job-info
+// Body: { ids: [...], job_id: <id | 'general'>, label, value }
+// Creates a Job Info fact in the given folder (job_id 'general' or null =
+// General facts) AND marks the supplied open questions resolved — atomically,
+// so a fact is never created without clearing the questions and vice-versa.
+router.post('/unanswered-questions/add-to-job-info', (req, res) => {
+  const { job_id, label, value } = req.body || {};
+  const ids = readIds(req.body);
+  if (!ids) return res.status(400).json({ error: 'ids must be a non-empty array' });
+  if (!label || !String(label).trim()) return res.status(400).json({ error: 'label is required' });
+  if (value === undefined || value === null || !String(value).trim()) return res.status(400).json({ error: 'value is required' });
+
+  const jobId = job_id === 'general' || job_id === undefined || job_id === null || job_id === '' ? null : job_id;
+  if (jobId !== null && !db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(jobId)) {
+    return res.status(404).json({ error: 'job not found' });
+  }
+
+  const factId = uuid();
+  const tx = db.transaction(() => {
+    const nextRow = jobId === null
+      ? db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM job_info_facts WHERE job_id IS NULL').get()
+      : db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM job_info_facts WHERE job_id = ?').get(jobId);
+    db.prepare('INSERT INTO job_info_facts (id, job_id, label, value, sort_order) VALUES (?, ?, ?, ?, ?)')
+      .run(factId, jobId, String(label).trim(), String(value).trim(), nextRow.n);
+    const stmt = db.prepare("UPDATE unanswered_questions SET status = 'resolved', updated_at = datetime('now') WHERE id = ? AND status = 'open'");
+    let resolved = 0;
+    for (const id of ids) resolved += stmt.run(id).changes;
+    return resolved;
+  });
+  const resolved = tx();
+
+  res.status(201).json({
+    fact: db.prepare('SELECT * FROM job_info_facts WHERE id = ?').get(factId),
+    resolved,
   });
 });
 
@@ -985,6 +1155,18 @@ const SECRETS = [
     label: 'Internal API key',
     hint: 'Sent by HappyRobot workflow nodes as the x-api-key header on Prescreen / Agent Interview / Job Info calls.',
     env: 'INTERNAL_API_KEY',
+  },
+  {
+    key: 'jobbot_api_key',
+    label: 'JobBot API key (read-only)',
+    hint: 'Sent by the external JobBot agent as x-api-key on the read-only /api/jobbot/* job-facts lookups. Separate from the internal key to limit blast radius.',
+    env: 'JOBBOT_API_KEY',
+  },
+  {
+    key: 'unanswered_questions_api_key',
+    label: 'Unanswered-questions API key (write-only)',
+    hint: 'Least-privilege key JobBot sends as x-api-key when reporting questions it could not answer (POST /api/jobbot/unanswered-questions). Can only create those rows — no reads, no other writes.',
+    env: 'UNANSWERED_QUESTIONS_API_KEY',
   },
   {
     key: 'ashby_api_key',

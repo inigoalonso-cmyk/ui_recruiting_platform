@@ -20,6 +20,7 @@ public/                -> UI (HTML/CSS/JS, no build step)
 4. Configure the environment variables (see `.env.example`):
    - `INTERNAL_API_KEY` — key that Happy Robot will send in the `x-api-key` header for scoring/interview/recruiter calls.
    - `JOBBOT_API_KEY` — separate **read-only** key for the JobBot API (`/api/jobbot/*`), also sent as `x-api-key`. Keep it distinct from `INTERNAL_API_KEY`.
+   - `UNANSWERED_QUESTIONS_API_KEY` — separate **write-only** key JobBot sends as `x-api-key` to report questions it couldn't answer (`POST /api/jobbot/unanswered-questions`). Can only create those rows; keep it distinct from both keys above.
    - `ASHBY_API_KEY` — your Ashby API key (Ashby → Settings → API).
    - `ASHBY_SCORE_FIELD_ID` — id of the custom field in Ashby where the score is stored (create it in Ashby and use `customField.list` to get its id, or copy it from the Ashby UI if it shows it).
    - `ASHBY_SCORE_OBJECT_TYPE` — `Application` or `Candidate`, depending on which object type you created the custom field on.
@@ -170,6 +171,52 @@ this in the payload.
 ```
 
 Unknown job → `404 { "error": "job not found", "titleOrSlug": "..." }`.
+
+### 5. Unanswered questions ("Suggested additions")
+
+When JobBot gets a candidate question it **can't** answer from the current facts,
+it reports it here. Recruiters triage these in the **Job Info → Suggested
+additions** view, which groups open questions by exact text (case-insensitive,
+trimmed) and ranks them by frequency, then either turns one into a Job Info fact
+or dismisses it.
+
+**Ingestion** is guarded by its own **write-only** key,
+`UNANSWERED_QUESTIONS_API_KEY`, sent as `x-api-key`. This is the smallest
+possible credential: it can **only create** unanswered-question rows — it grants
+**no reads** (not even job facts — that's `JOBBOT_API_KEY`) and **none** of the
+scoring/interview writes guarded by `INTERNAL_API_KEY`. Keep it distinct from
+both other keys. A leak lets an attacker only enqueue junk suggestions a
+recruiter can dismiss.
+
+```
+POST /api/jobbot/unanswered-questions
+Header: x-api-key: <UNANSWERED_QUESTIONS_API_KEY>
+Body:   { "role_label": "Field Engineer", "question": "Is there visa sponsorship?", "timestamp": "2026-07-09T10:00:00Z" }
+```
+
+- `question` — **required**.
+- `role_label` — optional/nullable free-text role the agent reported (not an FK
+  to jobs; these rows survive job-folder deletes).
+- `timestamp` — optional ISO-8601; stored as `created_at` when parseable, else
+  the server stamps the current time.
+
+Response `201`:
+```json
+{ "id": "…", "role_label": "Field Engineer", "question_text": "Is there visa sponsorship?", "status": "open", "created_at": "2026-07-09 10:00:00" }
+```
+
+The recruiter-facing management endpoints (used by the UI, ungated like the rest
+of the browser API) are:
+
+```
+GET  /api/unanswered-questions?status=open        -> groups ranked by frequency
+POST /api/unanswered-questions/dismiss            -> { ids: [...] }  → status=dismissed
+POST /api/unanswered-questions/add-to-job-info    -> { ids, job_id, label, value }
+                                                     creates a fact + resolves those rows (atomic)
+```
+
+`job_id` is a job id or `"general"` (General facts). `add-to-job-info` creates
+the fact and marks the supplied open rows `resolved` in one transaction.
 
 ## History tab
 

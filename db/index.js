@@ -164,6 +164,29 @@ CREATE TABLE IF NOT EXISTS recruiters (
 
 CREATE INDEX IF NOT EXISTS idx_recruiters_job
   ON recruiters (recruiter_job_id, created_at);
+
+-- ---------- UNANSWERED QUESTIONS (Suggested additions) ----------
+-- Questions candidates asked the JobBot voice/chat agent that it could NOT
+-- answer from the current Job Info facts. JobBot POSTs each one here (via a
+-- dedicated write-only key, see requireUnansweredKey in routes/api.js). The
+-- recruiter-facing "Suggested additions" view groups OPEN rows by exact-match
+-- question text (case-insensitive, trimmed) and ranks them by frequency, so
+-- recruiters see the most-asked gaps first and can turn them into Job Info
+-- facts. role_label is the free-text role the agent reported (nullable — the
+-- agent may not know it); it is NOT a foreign key to jobs, so these rows
+-- survive job-folder deletes and don't need a cascade.
+CREATE TABLE IF NOT EXISTS unanswered_questions (
+  id TEXT PRIMARY KEY,
+  role_label TEXT,
+  question_text TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved', 'dismissed')),
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+-- Aggregation groups OPEN rows by normalized text; this index keeps the
+-- status filter + recency ordering cheap.
+CREATE INDEX IF NOT EXISTS idx_unanswered_status
+  ON unanswered_questions (status, created_at DESC);
 `);
 
 // ---------- Lightweight migrations for existing databases ----------
