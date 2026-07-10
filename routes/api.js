@@ -264,6 +264,50 @@ router.delete('/job-info/:id', (req, res) => {
   res.status(204).end();
 });
 
+// ---------- COMPANY FAQ (a.k.a. Global FAQ; company-wide, role-independent) ----------
+// Recruiter-facing label/value facts the JobBot agent can answer for ANY
+// candidate regardless of role (offices, funding, values, interview process…).
+// A single flat global list — no job_id, no folders. Same open (browser)
+// access as the Job Info CRUD above; the read-only JobBot surface is the
+// separately-keyed GET /jobbot/global-faq below.
+router.get('/company-faq', (req, res) => {
+  res.json(db.prepare('SELECT * FROM company_faq ORDER BY sort_order, created_at').all());
+});
+
+router.post('/company-faq', (req, res) => {
+  const { label, value } = req.body;
+  if (!label || !label.trim()) return res.status(400).json({ error: 'label is required' });
+  if (value === undefined || value === null || !String(value).trim()) return res.status(400).json({ error: 'value is required' });
+  const nextRow = db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM company_faq').get();
+  const id = uuid();
+  db.prepare('INSERT INTO company_faq (id, label, value, sort_order) VALUES (?, ?, ?, ?)')
+    .run(id, label.trim(), String(value).trim(), nextRow.n);
+  res.status(201).json(db.prepare('SELECT * FROM company_faq WHERE id = ?').get(id));
+});
+
+router.put('/company-faq/:id', (req, res) => {
+  const existing = db.prepare('SELECT * FROM company_faq WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'fact not found' });
+  const { label, value } = req.body;
+  if (label !== undefined && !label.trim()) return res.status(400).json({ error: 'label cannot be empty' });
+  if (value !== undefined && !String(value).trim()) return res.status(400).json({ error: 'value cannot be empty' });
+  db.prepare(`
+    UPDATE company_faq
+       SET label = COALESCE(?, label), value = COALESCE(?, value), updated_at = datetime('now')
+     WHERE id = ?
+  `).run(
+    label !== undefined ? label.trim() : null,
+    value !== undefined ? String(value).trim() : null,
+    req.params.id,
+  );
+  res.json(db.prepare('SELECT * FROM company_faq WHERE id = ?').get(req.params.id));
+});
+
+router.delete('/company-faq/:id', (req, res) => {
+  db.prepare('DELETE FROM company_faq WHERE id = ?').run(req.params.id);
+  res.status(204).end();
+});
+
 // JobBot-facing lookup: GET /jobinfo/lookup?job=...
 // Resolves a job by Ashby job id first, then by name (case-insensitive), and
 // returns its facts (job-specific first, then general facts that apply to all
@@ -336,6 +380,19 @@ router.get('/jobbot/jobs', requireJobbotKey, (req, res) => {
 // route below so the literal "general" is never captured as a job name/slug.
 router.get('/jobbot/jobs/general', requireJobbotKey, (req, res) => {
   res.json({ title: 'General', slug: 'general', facts: generalFacts() });
+});
+
+// 4. Company-wide FAQ (a.k.a. Global FAQ): role-INDEPENDENT facts that apply to
+// every candidate no matter which role they applied to (offices, funding,
+// values/culture, interview process…). Takes NO role parameter — the same
+// response for every call. Read from the standalone company_faq table (NOT
+// job_info_facts), so this content is never merged into per-role responses.
+// Registered BEFORE the :titleOrSlug route so "global-faq" is never captured as
+// a job name/slug. Kept lightweight (one indexed table read, no joins) because
+// the voice workflow calls it once at the very start of each conversation.
+router.get('/jobbot/global-faq', requireJobbotKey, (req, res) => {
+  const facts = db.prepare('SELECT label, value FROM company_faq ORDER BY sort_order, created_at').all();
+  res.json({ title: 'Company FAQ', slug: 'global-faq', facts });
 });
 
 // 2. Facts for one job, WITH the general facts merged in (job-specific first,

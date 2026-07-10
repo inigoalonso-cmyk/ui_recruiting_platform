@@ -93,6 +93,24 @@ CREATE TABLE IF NOT EXISTS job_info_facts (
 );
 CREATE INDEX IF NOT EXISTS idx_job_info_facts_job ON job_info_facts (job_id, sort_order);
 
+-- Company FAQ (a.k.a. Global FAQ): company-wide, ROLE-INDEPENDENT facts the
+-- JobBot voice agent can answer for ANY candidate regardless of the role they
+-- applied to — office locations, funding, values/culture, interview process,
+-- etc. Deliberately a SEPARATE table from job_info_facts: those are per-role
+-- (and the job_id-NULL "General" ones get merged into every role's response),
+-- whereas these stand alone and are served verbatim by GET /api/jobbot/global-faq.
+-- Same free-form label/value + sort_order shape as job_info_facts so the
+-- dashboard editor and the JobBot response mirror the Job Info tab exactly.
+CREATE TABLE IF NOT EXISTS company_faq (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  value TEXT NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_company_faq_sort ON company_faq (sort_order, created_at);
+
 -- Prescreen (Phase 1) results land here.
 CREATE TABLE IF NOT EXISTS score_log (
   id TEXT PRIMARY KEY,
@@ -211,5 +229,28 @@ const seedSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALU
 seedSetting.run('pass_threshold', '8');
 seedSetting.run('max_call_attempts', '3');
 seedSetting.run('call_recording_enabled', process.env.INTERVIEW_RECORDING_ENABLED === 'true' ? '1' : '0');
+
+// Seed the Company FAQ with starter content the FIRST time only (when the table
+// is completely empty), so GET /api/jobbot/global-faq never returns an empty
+// array before a recruiter has filled it in. Once any row exists — seeded or
+// edited — this never runs again, so it can't clobber dashboard edits. The
+// values below are starter placeholders; refine them from the Company FAQ tab.
+const companyFaqCount = db.prepare('SELECT COUNT(*) AS n FROM company_faq').get().n;
+if (companyFaqCount === 0) {
+  const { randomUUID } = require('crypto');
+  const seedFact = db.prepare('INSERT INTO company_faq (id, label, value, sort_order) VALUES (?, ?, ?, ?)');
+  const COMPANY_FAQ_SEED = [
+    ['Offices', 'San Francisco (HQ), Delaware, and Madrid, Spain.'],
+    ['Funding', '~$62M raised total. Series B: $44M in September 2025, led by Base10 Partners (~$500M valuation), with a16z, Y Combinator, Tokio Marine, WaVe-X, and World Innovation Lab participating. Series A: $15.6M in December 2024, led by a16z.'],
+    ['Founded', 'Founded in 2023 by Pablo Palafox, Luis Paarup, and Javi Palafox.'],
+    ['Values / culture', 'Responsibility (full ownership of what you build, including bugs and uptime), Excellence, Warmth & Approachability, merit-based hiring (ability over seniority), and first-principles thinking.'],
+    ['Interview process', 'Placeholder — fill in the standard interview process from the Company FAQ tab.'],
+  ];
+  const seedCompanyFaq = db.transaction((rows) => {
+    rows.forEach(([label, value], i) => seedFact.run(randomUUID(), label, value, i));
+  });
+  seedCompanyFaq(COMPANY_FAQ_SEED);
+  console.log(`[db] Seeded Company FAQ with ${COMPANY_FAQ_SEED.length} starter facts (table was empty).`);
+}
 
 module.exports = db;

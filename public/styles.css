@@ -172,6 +172,13 @@ html, body {
   padding-left: 4px;
 }
 
+.rail-hint {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-faint);
+  padding: 8px 4px 0;
+}
+
 .folder-list {
   display: flex;
   flex-direction: column;

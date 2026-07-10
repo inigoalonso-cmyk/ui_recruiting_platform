@@ -111,7 +111,7 @@ data with **no redeploy**. These endpoints are **read-only (GET only)** and
 **namespaced under `/api/jobbot`** so they never collide with the UI's own
 `/api/jobs` routes.
 
-All three require an `x-api-key` header matched against a **dedicated, read-only
+They all require an `x-api-key` header matched against a **dedicated, read-only
 `JOBBOT_API_KEY`** — kept **separate from `INTERNAL_API_KEY`** on purpose. This
 key lives inside the third-party HappyRobot workflow platform, so if it ever
 leaks it only exposes read-only job facts, not the general internal key that also
@@ -122,6 +122,7 @@ env variables. Requests without a valid key get `401`.
 GET /api/jobbot/jobs                    -> list every configured job (validate/match a role name)
 GET /api/jobbot/jobs/general            -> the General facts that apply to every job
 GET /api/jobbot/jobs/:titleOrSlug       -> one job's facts, WITH the General facts merged in
+GET /api/jobbot/global-faq              -> company-wide, role-INDEPENDENT facts (no role param)
 Header: x-api-key: <JOBBOT_API_KEY>
 ```
 
@@ -171,6 +172,25 @@ this in the payload.
 ```
 
 Unknown job → `404 { "error": "job not found", "titleOrSlug": "..." }`.
+
+**`GET /api/jobbot/global-faq`** — company-wide, **role-independent** facts that
+apply to **every** candidate no matter which role they applied to (offices,
+funding, values/culture, interview process…). Takes **no** role parameter — the
+same response for every call. Read from a standalone **Company FAQ** table
+(edited in the **Company FAQ** tab of the dashboard), so this content is **never**
+merged into the per-role `/jobbot/jobs/*` responses. Deliberately lightweight
+(one indexed table read, no joins) because the voice workflow calls it once at
+the very start of each conversation.
+```json
+{
+  "title": "Company FAQ",
+  "slug": "global-faq",
+  "facts": [
+    { "label": "Offices", "value": "San Francisco (HQ), Delaware, and Madrid, Spain." },
+    { "label": "Funding", "value": "~$62M raised total. Series B: $44M…" }
+  ]
+}
+```
 
 ### 5. Unanswered questions ("Suggested additions")
 

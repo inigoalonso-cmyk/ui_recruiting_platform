@@ -1,5 +1,5 @@
 const state = {
-  section: 'screening', // 'screening', 'recruiters', or 'settings'
+  section: 'screening', // 'screening', 'recruiters', 'jobinfo', 'companyfaq', or 'settings'
   jobs: [],
   selected: 'general', // 'general' or job.id
   view: 'criteria',    // 'criteria' or 'history'
@@ -225,6 +225,10 @@ async function renderContent() {
     } else {
       await renderJobInfoView();
     }
+    return;
+  }
+  if (state.section === 'companyfaq') {
+    await renderCompanyFaqView();
     return;
   }
   if (state.view === 'history') {
@@ -485,10 +489,12 @@ function setSection(section) {
   document.getElementById('section-screening').classList.toggle('active', section === 'screening');
   document.getElementById('section-recruiters').classList.toggle('active', section === 'recruiters');
   document.getElementById('section-jobinfo').classList.toggle('active', section === 'jobinfo');
+  document.getElementById('section-companyfaq').classList.toggle('active', section === 'companyfaq');
   document.getElementById('nav-settings').classList.remove('active');
   document.getElementById('screening-section').style.display = section === 'screening' ? '' : 'none';
   document.getElementById('recruiters-section').style.display = section === 'recruiters' ? '' : 'none';
   document.getElementById('jobinfo-section').style.display = section === 'jobinfo' ? '' : 'none';
+  document.getElementById('companyfaq-section').style.display = section === 'companyfaq' ? '' : 'none';
   renderContent();
 }
 
@@ -502,6 +508,7 @@ document.getElementById('section-jobinfo').addEventListener('click', () => {
   refreshSuggestionsBadge();
   setSection('jobinfo');
 });
+document.getElementById('section-companyfaq').addEventListener('click', () => setSection('companyfaq'));
 document.getElementById('nav-settings').addEventListener('click', () => setSettingsView());
 
 // ---- Job Info sub-nav: Facts / Suggested additions ----
@@ -908,6 +915,63 @@ async function renderJobInfoView() {
   renderFactsSection(document.getElementById('jobinfo-facts'), facts, scopeId);
 }
 
+// ================= COMPANY FAQ (company-wide, role-independent) =================
+// A single flat list of label/value facts JobBot can answer for ANY candidate
+// regardless of role. Read live by the voice workflow via
+// GET /api/jobbot/global-faq. Mirrors the Job Info facts editor but with no
+// folders and its own /company-faq endpoints.
+async function renderCompanyFaqView() {
+  contentEl.innerHTML = `
+    <div class="folder-label">Company FAQ</div>
+    <h1 class="folder-title">Company FAQ</h1>
+    <div class="folder-meta">Company-wide facts that apply to every candidate, regardless of role — offices, funding, values, interview process. Fetched by the JobBot voice agent via <span class="mono">GET /api/jobbot/global-faq</span>.</div>
+    <div class="section" id="companyfaq-facts"></div>`;
+
+  let facts;
+  try {
+    facts = await api('/company-faq');
+  } catch (err) {
+    document.getElementById('companyfaq-facts').innerHTML = `<div class="empty-state">Could not load Company FAQ: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  renderCompanyFaqSection(document.getElementById('companyfaq-facts'), facts);
+}
+
+function renderCompanyFaqSection(container, facts) {
+  container.innerHTML = `
+    <div class="section-heading">
+      <h2>Company facts</h2>
+      <span class="weight-total">${facts.length} ${facts.length === 1 ? 'fact' : 'facts'}</span>
+    </div>
+    <div class="section-hint">Label + value pairs any candidate might ask JobBot about — office locations, funding, company values, interview process… These apply to every role.</div>
+    <div class="fact-list" id="companyfaq-fact-list"></div>
+    <form class="add-fact-form" id="add-companyfaq-form">
+      <input type="text" name="label" placeholder="Label (e.g. Offices)" required />
+      <input type="text" name="value" placeholder="Value (e.g. San Francisco, Madrid…)" required />
+      <button type="submit" title="Add fact">+</button>
+    </form>`;
+
+  const listEl = container.querySelector('#companyfaq-fact-list');
+  if (!facts.length) {
+    listEl.innerHTML = `<div class="empty-state">No facts yet. Add the first one below.</div>`;
+  } else {
+    facts.forEach(f => listEl.appendChild(buildFactBanner(f, 'company-faq')));
+  }
+
+  container.querySelector('#add-companyfaq-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const label = form.label.value.trim();
+    const value = form.value.value.trim();
+    if (!label || !value) return;
+    try {
+      await api('/company-faq', { method: 'POST', body: JSON.stringify({ label, value }) });
+      showToast('Fact added');
+      await renderContent();
+    } catch (err) { showToast(err.message, true); }
+  });
+}
+
 function renderFactsSection(container, facts, scopeId) {
   container.innerHTML = `
     <div class="section-heading">
@@ -943,7 +1007,11 @@ function renderFactsSection(container, facts, scopeId) {
   });
 }
 
-function buildFactBanner(f) {
+// `resource` is the REST base for edit/delete of a single fact: 'job-info' for
+// per-role Job Info facts (PUT/DELETE /api/job-info/:id) or 'company-faq' for
+// the Company FAQ (PUT/DELETE /api/company-faq/:id). Both share this identical
+// collapsible label/value banner UI.
+function buildFactBanner(f, resource = 'job-info') {
   const el = document.createElement('div');
   el.className = 'fact-banner';
 
@@ -963,7 +1031,7 @@ function buildFactBanner(f) {
       if (!label || !value) { showToast('Label and value are required', true); return; }
       state.editingFactId = null;
       try {
-        await api(`/job-info/${f.id}`, { method: 'PUT', body: JSON.stringify({ label, value }) });
+        await api(`/${resource}/${f.id}`, { method: 'PUT', body: JSON.stringify({ label, value }) });
         showToast('Fact updated');
         await renderContent();
       } catch (err) { showToast(err.message, true); await renderContent(); }
@@ -996,10 +1064,10 @@ function buildFactBanner(f) {
       variant: 'danger',
       onSelect: () => RowMenu.confirmDialog({
         title: 'Remove fact',
-        message: `Remove "${f.label}" from this job’s info? This can't be undone.`,
+        message: `Remove "${f.label}"? This can't be undone.`,
         confirmLabel: 'Remove',
         onConfirm: async () => {
-          await api(`/job-info/${f.id}`, { method: 'DELETE' });
+          await api(`/${resource}/${f.id}`, { method: 'DELETE' });
           state.expandedFacts.delete(f.id);
           showToast('Fact removed');
           await renderContent();
@@ -1540,10 +1608,12 @@ function setSettingsView() {
   document.getElementById('section-screening').classList.remove('active');
   document.getElementById('section-recruiters').classList.remove('active');
   document.getElementById('section-jobinfo').classList.remove('active');
+  document.getElementById('section-companyfaq').classList.remove('active');
   document.getElementById('nav-settings').classList.add('active');
   document.getElementById('screening-section').style.display = 'none';
   document.getElementById('recruiters-section').style.display = 'none';
   document.getElementById('jobinfo-section').style.display = 'none';
+  document.getElementById('companyfaq-section').style.display = 'none';
   renderSettingsView();
 }
 

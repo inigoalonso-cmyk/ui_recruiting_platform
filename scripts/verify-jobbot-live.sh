@@ -24,19 +24,22 @@ body() { curl -s "$@"; }
 echo "== Auth =="
 check "no key -> 401"            401 "$(code "$BASE_URL/api/jobbot/jobs")"
 check "bad key -> 401"           401 "$(code -H 'x-api-key: definitely-wrong' "$BASE_URL/api/jobbot/jobs")"
+check "global-faq no key -> 401" 401 "$(code "$BASE_URL/api/jobbot/global-faq")"
 if [ -n "${INTERNAL_API_KEY:-}" ]; then
   check "INTERNAL key rejected -> 401" 401 "$(code -H "x-api-key: $INTERNAL_API_KEY" "$BASE_URL/api/jobbot/jobs")"
 fi
 check "JOBBOT key accepted -> 200" 200 "$(code -H "x-api-key: $JOBBOT_API_KEY" "$BASE_URL/api/jobbot/jobs")"
 
 echo "== Payloads =="
-check "list -> 200"    200 "$(code -H "x-api-key: $JOBBOT_API_KEY" "$BASE_URL/api/jobbot/jobs")"
-check "general -> 200" 200 "$(code -H "x-api-key: $JOBBOT_API_KEY" "$BASE_URL/api/jobbot/jobs/general")"
-check "unknown -> 404" 404 "$(code -H "x-api-key: $JOBBOT_API_KEY" "$BASE_URL/api/jobbot/jobs/__no_such_job__")"
+check "list -> 200"       200 "$(code -H "x-api-key: $JOBBOT_API_KEY" "$BASE_URL/api/jobbot/jobs")"
+check "general -> 200"    200 "$(code -H "x-api-key: $JOBBOT_API_KEY" "$BASE_URL/api/jobbot/jobs/general")"
+check "global-faq -> 200" 200 "$(code -H "x-api-key: $JOBBOT_API_KEY" "$BASE_URL/api/jobbot/global-faq")"
+check "unknown -> 404"    404 "$(code -H "x-api-key: $JOBBOT_API_KEY" "$BASE_URL/api/jobbot/jobs/__no_such_job__")"
 
 echo "== Sample bodies =="
-echo "  /jobbot/jobs:"        ; body -H "x-api-key: $JOBBOT_API_KEY" "$BASE_URL/api/jobbot/jobs"
-echo "  /jobbot/jobs/general:"; body -H "x-api-key: $JOBBOT_API_KEY" "$BASE_URL/api/jobbot/jobs/general"
+echo "  /jobbot/jobs:"         ; body -H "x-api-key: $JOBBOT_API_KEY" "$BASE_URL/api/jobbot/jobs"
+echo "  /jobbot/jobs/general:" ; body -H "x-api-key: $JOBBOT_API_KEY" "$BASE_URL/api/jobbot/jobs/general"
+echo "  /jobbot/global-faq:"   ; body -H "x-api-key: $JOBBOT_API_KEY" "$BASE_URL/api/jobbot/global-faq"
 
 if [ -n "$JOB" ]; then
   enc=$(printf '%s' "$JOB" | sed 's/ /%20/g')
