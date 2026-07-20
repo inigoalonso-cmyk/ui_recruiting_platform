@@ -1,34 +1,43 @@
 :root {
-  /* Surfaces */
-  --bg: #F9FAFB;          /* page background */
+  /* Surfaces — layered neutrals with a hint of cool depth */
+  --bg: #F6F7F9;          /* page background */
   --surface: #FFFFFF;     /* cards, sidebars */
-  --surface-alt: #F3F4F6; /* input fill, hover, subtle rows */
+  --surface-alt: #F1F3F6; /* input fill, hover, subtle rows */
+  --surface-sunken: #FBFBFD;
 
   /* Lines */
-  --line: #E5E7EB;
-  --line-strong: #D1D5DB;
+  --line: #E9EBF0;
+  --line-strong: #D6DAE1;
 
   /* Text */
-  --text: #111827;
-  --text-muted: #6B7280;
-  --text-faint: #9CA3AF;
+  --text: #0F1729;
+  --text-muted: #5B6474;
+  --text-faint: #98A0AE;
 
-  /* Reserved accent (used sparingly — data viz, focus, active bits) */
-  --accent: #2563EB;
-  --accent-soft: #EFF6FF;
+  /* Accent — modern indigo */
+  --accent: #4F46E5;
+  --accent-hover: #4338CA;
+  --accent-soft: #EEF0FF;
+  --accent-ring: rgba(79, 70, 229, 0.18);
 
   /* Status */
   --pass-bg: #DCFCE7; --pass-fg: #15803D;
   --fail-bg: #FEE2E2; --fail-fg: #B42318;
   --neutral-bg: #F3F4F6; --neutral-fg: #6B7280;
-  --dark: #111827;
+  --dark: #0F1729;
 
+  --radius-lg: 16px;
   --radius: 12px;
-  --radius-sm: 8px;
+  --radius-sm: 9px;
   --radius-pill: 999px;
 
-  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  /* Elevation */
+  --shadow-sm: 0 1px 2px rgba(15, 23, 41, 0.05), 0 1px 1px rgba(15, 23, 41, 0.03);
+  --shadow: 0 4px 12px -2px rgba(15, 23, 41, 0.08), 0 2px 4px -2px rgba(15, 23, 41, 0.05);
+  --shadow-lg: 0 12px 32px -8px rgba(15, 23, 41, 0.16), 0 4px 8px -4px rgba(15, 23, 41, 0.06);
+
+  --font-body: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
 }
 
 * { box-sizing: border-box; }
@@ -45,9 +54,12 @@ html, body {
 
 .app {
   display: grid;
-  grid-template-columns: 78px 252px 1fr;
-  min-height: 100vh;
+  grid-template-columns: 78px 264px 1fr;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
 }
+body { overflow: hidden; }
 
 /* ---------- Icon rail (global nav) ---------- */
 .icon-rail {
@@ -1532,3 +1544,89 @@ html, body {
   .suggestion-add-grid { grid-template-columns: 1fr; }
   .suggestion-actions { width: 100%; }
 }
+
+/* ============================================================
+   MODERN REFRESH — premium SaaS look (source-order overrides)
+   ============================================================ */
+
+/* --- Independent scroll: each pane owns its own scrollbar --- */
+.rail { overflow: hidden; padding: 20px 14px; gap: 16px; }
+.section-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
+#criteria-nav, #jobinfo-facts-nav { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
+.folder-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+.main { min-height: 0; overflow-y: auto; }
+
+/* Quiet, rounded scrollbars */
+.folder-list::-webkit-scrollbar, .main::-webkit-scrollbar { width: 10px; height: 10px; }
+.folder-list::-webkit-scrollbar-thumb, .main::-webkit-scrollbar-thumb {
+  background: var(--line-strong); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box;
+}
+.folder-list::-webkit-scrollbar-thumb:hover, .main::-webkit-scrollbar-thumb:hover { background: #B7BEC9; background-clip: padding-box; }
+
+/* --- Icon rail --- */
+.icon-rail { background: linear-gradient(180deg, #FFFFFF 0%, #FBFBFE 100%); }
+.brand-mark { border-radius: 11px; box-shadow: var(--shadow-sm); }
+.icon-btn { border-radius: 11px; transition: background .15s ease, color .15s ease; }
+.icon-btn:hover { background: var(--surface-alt); color: var(--text); }
+.icon-btn.active, .icon-btn.labeled.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.avatar-user { background: var(--accent); color: #fff; font-weight: 700; }
+
+/* --- Sidebar header --- */
+.rail-title { font-size: 15px; font-weight: 700; letter-spacing: -0.02em; }
+.rail-subtitle { font-size: 11.5px; }
+
+/* Segmented sub-nav (Criteria/History, Facts/Suggested additions) */
+.rail-nav { background: var(--surface-alt); border-radius: var(--radius); padding: 3px; display: flex; gap: 3px; }
+.rail-nav .nav-item {
+  flex: 1; border: none; background: transparent; color: var(--text-muted);
+  font-family: var(--font-body); font-size: 12.5px; font-weight: 600; padding: 6px 8px;
+  border-radius: 8px; cursor: pointer; transition: background .15s ease, color .15s ease, box-shadow .15s ease;
+}
+.rail-nav .nav-item:hover { color: var(--text); }
+.rail-nav .nav-item.active { background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm); }
+
+/* --- Folder tabs --- */
+.folder-tab { font-size: 13.5px; font-weight: 500; padding: 9px 11px; border-radius: var(--radius-sm); }
+.folder-tab:hover { background: var(--surface-alt); }
+.folder-tab.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; box-shadow: inset 3px 0 0 var(--accent); padding-left: 13px; }
+.folder-tab.general { color: var(--text-muted); }
+.folder-tab.general.active { color: var(--accent); }
+/* Pinned Company FAQ folder */
+.folder-tab.pinned { color: var(--text); justify-content: flex-start; }
+.folder-tab.pinned .folder-tab-ico { flex: 0 0 auto; margin-right: 9px; opacity: .65; }
+.folder-tab.pinned.active .folder-tab-ico { opacity: 1; }
+.folder-tab.pinned.active .folder-tab-ico { opacity: 1; }
+.folder-divider { height: 1px; background: var(--line); margin: 8px 4px; }
+
+/* --- New folder input + primary button --- */
+.new-job-form { padding-top: 12px; }
+.new-job-form input { border-radius: var(--radius-sm); background: var(--surface-sunken); }
+.new-job-form button {
+  background: var(--accent); color: #fff; border: none; font-weight: 600; font-size: 13px;
+  box-shadow: var(--shadow-sm); transition: background .15s ease, transform .04s ease;
+}
+.new-job-form button:hover { background: var(--accent-hover); color: #fff; border-color: transparent; }
+.new-job-form button:active { transform: translateY(1px); }
+
+/* --- Main content --- */
+.main { padding: 44px 52px 64px; }
+.folder-title { font-size: 28px; font-weight: 700; letter-spacing: -0.025em; }
+.folder-label { color: var(--accent); }
+.mono, .folder-meta .mono { font-family: var(--font-mono); font-size: 12px; background: var(--surface-alt); padding: 2px 7px; border-radius: 6px; color: var(--text-muted); }
+.section-heading h2 { font-size: 15px; font-weight: 700; letter-spacing: -0.01em; }
+
+/* --- Cards & lists: softer elevation, larger radius --- */
+.card, .killer-list {
+  border-radius: var(--radius-lg); border: 1px solid var(--line); box-shadow: var(--shadow); background: var(--surface);
+}
+.param-row, .killer-card { transition: background .12s ease; }
+.param-row:hover, .killer-card:hover { background: var(--surface-sunken); }
+
+/* --- Focus ring -> accent everywhere --- */
+input:focus, select:focus, textarea:focus { box-shadow: 0 0 0 3px var(--accent-ring) !important; border-color: var(--accent) !important; }
+
+/* --- Square "+" add buttons -> accent --- */
+.add-row-form button, .add-killer-form button, .add-fact-form button {
+  background: var(--accent); border-radius: 10px; box-shadow: var(--shadow-sm);
+}
+.add-row-form button:hover, .add-killer-form button:hover, .add-fact-form button:hover { background: var(--accent-hover); }

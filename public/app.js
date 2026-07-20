@@ -489,12 +489,10 @@ function setSection(section) {
   document.getElementById('section-screening').classList.toggle('active', section === 'screening');
   document.getElementById('section-recruiters').classList.toggle('active', section === 'recruiters');
   document.getElementById('section-jobinfo').classList.toggle('active', section === 'jobinfo');
-  document.getElementById('section-companyfaq').classList.toggle('active', section === 'companyfaq');
   document.getElementById('nav-settings').classList.remove('active');
   document.getElementById('screening-section').style.display = section === 'screening' ? '' : 'none';
   document.getElementById('recruiters-section').style.display = section === 'recruiters' ? '' : 'none';
   document.getElementById('jobinfo-section').style.display = section === 'jobinfo' ? '' : 'none';
-  document.getElementById('companyfaq-section').style.display = section === 'companyfaq' ? '' : 'none';
   renderContent();
 }
 
@@ -508,7 +506,6 @@ document.getElementById('section-jobinfo').addEventListener('click', () => {
   refreshSuggestionsBadge();
   setSection('jobinfo');
 });
-document.getElementById('section-companyfaq').addEventListener('click', () => setSection('companyfaq'));
 document.getElementById('nav-settings').addEventListener('click', () => setSettingsView());
 
 // ---- Job Info sub-nav: Facts / Suggested additions ----
@@ -819,15 +816,24 @@ document.getElementById('new-recruiter-job-form').addEventListener('submit', asy
 function renderJobInfoFolderList() {
   if (!jobinfoFolderListEl) return;
   jobinfoFolderListEl.innerHTML = '';
+  // Pinned company-wide folders first: Company FAQ, then General.
+  jobinfoFolderListEl.appendChild(buildJobInfoFolderRow({ id: 'companyfaq', name: 'Company FAQ', companyfaq: true }));
   jobinfoFolderListEl.appendChild(buildJobInfoFolderRow({ id: 'general', name: 'General', general: true }));
+  const divider = document.createElement('div');
+  divider.className = 'folder-divider';
+  jobinfoFolderListEl.appendChild(divider);
   state.jobs.forEach(job => jobinfoFolderListEl.appendChild(buildJobInfoFolderRow(job)));
 }
 
+// Small inline SVG used as the pinned Company FAQ folder glyph.
+const FAQ_ICO = '<svg class="folder-tab-ico" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 21V6a2 2 0 0 1 2-2h9l4 4v13"/><path d="M14 4v4h4"/><path d="M7 11h6M7 15h4"/></svg>';
+
 function buildJobInfoFolderRow(job) {
+  const pinned = job.general || job.companyfaq; // company-wide, non-editable pseudo-folders
   const row = document.createElement('div');
   row.className = 'folder-row' + (state.jobInfoSelected === job.id ? ' active' : '');
 
-  if (!job.general && state.renamingJobInfoFolderId === job.id) {
+  if (!pinned && state.renamingJobInfoFolderId === job.id) {
     const input = document.createElement('input');
     input.className = 'folder-rename-input';
     input.value = job.name;
@@ -838,12 +844,15 @@ function buildJobInfoFolderRow(job) {
 
   const btn = document.createElement('button');
   btn.type = 'button';
-  btn.className = 'folder-tab' + (job.general ? ' general' : '') + (state.jobInfoSelected === job.id ? ' active' : '');
-  btn.innerHTML = `<span>${escapeHtml(job.name)}</span>`;
+  btn.className = 'folder-tab'
+    + (job.general ? ' general' : '')
+    + (job.companyfaq ? ' pinned' : '')
+    + (state.jobInfoSelected === job.id ? ' active' : '');
+  btn.innerHTML = (job.companyfaq ? FAQ_ICO : '') + `<span>${escapeHtml(job.name)}</span>`;
   btn.onclick = () => selectJobInfoFolder(job.id);
   row.appendChild(btn);
 
-  if (!job.general) {
+  if (!pinned) {
     row.appendChild(RowMenu.createRowMenu([
       { label: 'Rename', onSelect: () => { state.renamingJobInfoFolderId = job.id; renderJobInfoFolderList(); } },
       { label: 'Remove', variant: 'danger', onSelect: () => confirmRemoveFolder(job) },
@@ -889,6 +898,7 @@ async function selectJobInfoFolder(id) {
 
 async function renderJobInfoView() {
   const id = state.jobInfoSelected;
+  if (id === 'companyfaq') { await renderCompanyFaqView(); return; }
   const isGeneral = id === 'general';
   const job = isGeneral ? null : state.jobs.find(j => j.id === id);
   if (!isGeneral && !job) { state.jobInfoSelected = 'general'; return renderJobInfoView(); }
@@ -1608,12 +1618,10 @@ function setSettingsView() {
   document.getElementById('section-screening').classList.remove('active');
   document.getElementById('section-recruiters').classList.remove('active');
   document.getElementById('section-jobinfo').classList.remove('active');
-  document.getElementById('section-companyfaq').classList.remove('active');
   document.getElementById('nav-settings').classList.add('active');
   document.getElementById('screening-section').style.display = 'none';
   document.getElementById('recruiters-section').style.display = 'none';
   document.getElementById('jobinfo-section').style.display = 'none';
-  document.getElementById('companyfaq-section').style.display = 'none';
   renderSettingsView();
 }
 
