@@ -222,6 +222,23 @@ ensureColumn('killer_questions', 'weight', 'weight REAL NOT NULL DEFAULT 1');
 // preserves the historical "true = pass" behavior for existing questions.
 ensureColumn('killer_questions', 'expected_answer', 'expected_answer INTEGER NOT NULL DEFAULT 1');
 
+// The Ashby → dashboard sync (POST /api/sync/ashby-job) upserts a job folder by
+// its Ashby job id, so that column must be unique to prevent two folders from
+// claiming the same Ashby job. A PARTIAL index (WHERE ashby_job_id IS NOT NULL)
+// keeps the many hand-made folders that have no Ashby id (all NULL) legal — NULLs
+// are exempt from the uniqueness check. Wrapped in try/catch so a pre-existing
+// duplicate can't crash boot: instead we warn loudly and leave the sync endpoint
+// to reject the ambiguous case at runtime.
+try {
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_ashby_job_id ON jobs (ashby_job_id) WHERE ashby_job_id IS NOT NULL');
+} catch (err) {
+  console.warn(
+    `[db] Could not create UNIQUE index on jobs.ashby_job_id — there are likely ` +
+    `duplicate ashby_job_id values already. Fix them so the Ashby sync stays ` +
+    `unambiguous. Underlying error: ${err.message}`,
+  );
+}
+
 // Seed settings defaults once (INSERT OR IGNORE keeps user-edited values).
 // call_recording_enabled seeds from the legacy env var so behavior is unchanged
 // on first boot; after that it's controlled from the Settings page.

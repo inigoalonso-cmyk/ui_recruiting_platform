@@ -3,6 +3,7 @@ const { v4: uuid } = require('uuid');
 const db = require('../db');
 const ashby = require('./ashby');
 const { scoreAnswers } = require('./scoring');
+const { canonicalizeRole } = require('./roles');
 
 const router = express.Router();
 
@@ -65,6 +66,22 @@ function requireJobbotKey(req, res, next) {
 // dismiss — the smallest possible blast radius for this new surface.
 function requireUnansweredKey(req, res, next) {
   const configured = process.env.UNANSWERED_QUESTIONS_API_KEY;
+  if (!configured) return next(); // if not configured, we don't block (dev mode)
+  const provided = req.header('x-api-key');
+  if (provided !== configured) {
+    return res.status(401).json({ error: 'invalid or missing x-api-key' });
+  }
+  next();
+}
+
+// Dedicated key for the Ashby → dashboard sync (POST /api/sync/ashby-job). Its
+// own credential on purpose: it can create/update job folders and their Job Info
+// facts, so it's more powerful than the read-only JOBBOT key but narrower than
+// INTERNAL_API_KEY (no scoring/interview writes). Lives inside the HappyRobot
+// workflow, so a leak lets an attacker only churn job folders and facts a
+// recruiter can see and fix — not touch candidate scores or interview state.
+function requireSyncKey(req, res, next) {
+  const configured = process.env.ASHBY_SYNC_API_KEY;
   if (!configured) return next(); // if not configured, we don't block (dev mode)
   const provided = req.header('x-api-key');
   if (provided !== configured) {
@@ -262,6 +279,120 @@ router.put('/job-info/:id', (req, res) => {
 router.delete('/job-info/:id', (req, res) => {
   db.prepare('DELETE FROM job_info_facts WHERE id = ?').run(req.params.id);
   res.status(204).end();
+});
+
+// ---------- ASHBY SYNC (idempotent upsert, called by the HappyRobot workflow) ----------
+// One-shot endpoint that reflects a single Ashby open role into the dashboard so
+// the workflow doesn't have to orchestrate GET-then-POST-or-PUT itself.
+//
+// ROLE-LEVEL, LOCATION-AGNOSTIC: Ashby lists the same role once per country
+// ("Forward Deployed Engineer - SF", "... - Spain", ...). We collapse those into
+// ONE folder per role. The workflow posts each Ashby job as-is (raw title); this
+// endpoint derives the canonical role via canonicalizeRole() and anchors the
+// folder by that role key — so the 10 "Forward Deployed Engineer" postings all
+// land in a single folder. The anchor lives in jobs.ashby_job_id as
+// `role:<slug>` (prefixed so it never collides with a real Ashby UUID). The
+// interview-scoring resolver uses the SAME canonicalization, so an application
+// from any country maps back to this one folder.
+//
+// Given a role's (raw) title + the facts derived from Ashby, it:
+//   1. Resolves the folder by role key; if none, ADOPTS a hand-made folder whose
+//      name matches the canonical title (backfilling its anchor); else creates a
+//      new one named with the canonical title.
+//   2. Upserts the given facts BY LABEL (case-insensitive): updates the value if
+//      it changed, inserts if new. It NEVER deletes — so facts a recruiter added
+//      by hand (and any Ashby fact that later disappears) are preserved. Callers
+//      that want a fact removed must delete it from the dashboard.
+//   3. Touches ONLY Job Info. Screening (parameters / killer questions) is left
+//      untouched — creating the shared `jobs` row simply makes the (empty)
+//      Screening folder appear, which is exactly the intended behavior.
+// Everything runs in a single transaction so a partial failure leaves no
+// half-synced folder behind.
+router.post('/sync/ashby-job', requireSyncKey, (req, res) => {
+  const { title, facts } = req.body || {};
+  if (!title || !String(title).trim()) {
+    return res.status(400).json({ error: 'title is required' });
+  }
+  if (facts !== undefined && !Array.isArray(facts)) {
+    return res.status(400).json({ error: 'facts must be an array of { label, value }' });
+  }
+
+  const cleanTitle = String(title).trim();
+  const { canonicalTitle, roleKey } = canonicalizeRole(cleanTitle);
+
+  // Validate/normalize facts up front so we reject a bad payload before writing.
+  const cleanFacts = [];
+  for (const f of facts || []) {
+    if (!f || typeof f !== 'object') {
+      return res.status(400).json({ error: 'each fact must be an object { label, value }' });
+    }
+    const label = f.label == null ? '' : String(f.label).trim();
+    const value = f.value == null ? '' : String(f.value).trim();
+    if (!label) return res.status(400).json({ error: 'each fact needs a non-empty label' });
+    if (!value) continue; // skip empty values rather than write a blank fact
+    cleanFacts.push({ label, value });
+  }
+
+  const sync = db.transaction(() => {
+    // 1. Resolve the folder by its canonical role key.
+    let job = db.prepare('SELECT * FROM jobs WHERE ashby_job_id = ?').get(roleKey);
+    let action;
+    if (job) {
+      action = 'updated';
+    } else {
+      // Adopt a manually-created folder whose name matches the canonical role and
+      // has no anchor yet (the hand-made folders). Only adopt UNCLAIMED ones so we
+      // never steal a folder already bound to a different role.
+      const orphan = db
+        .prepare('SELECT * FROM jobs WHERE LOWER(name) = LOWER(?) AND ashby_job_id IS NULL')
+        .get(canonicalTitle);
+      if (orphan) {
+        db.prepare('UPDATE jobs SET ashby_job_id = ? WHERE id = ?').run(roleKey, orphan.id);
+        job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(orphan.id);
+        action = 'adopted';
+      } else {
+        const id = uuid();
+        db.prepare('INSERT INTO jobs (id, name, ashby_job_id) VALUES (?, ?, ?)').run(id, canonicalTitle, roleKey);
+        job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
+        action = 'created';
+      }
+    }
+
+    // 2. Upsert facts by label (case-insensitive). We never rename the folder on
+    //    update — recruiters may have curated the display name — so `title` only
+    //    matters at create/adopt time.
+    const existing = db.prepare('SELECT * FROM job_info_facts WHERE job_id = ?').all(job.id);
+    const byLabel = new Map(existing.map((r) => [r.label.toLowerCase(), r]));
+    let maxSort = existing.reduce((m, r) => Math.max(m, r.sort_order), -1);
+    let inserted = 0;
+    let updated = 0;
+    let unchanged = 0;
+    for (const { label, value } of cleanFacts) {
+      const hit = byLabel.get(label.toLowerCase());
+      if (!hit) {
+        maxSort += 1;
+        db.prepare('INSERT INTO job_info_facts (id, job_id, label, value, sort_order) VALUES (?, ?, ?, ?, ?)')
+          .run(uuid(), job.id, label, value, maxSort);
+        inserted += 1;
+      } else if (hit.value !== value) {
+        db.prepare("UPDATE job_info_facts SET value = ?, updated_at = datetime('now') WHERE id = ?")
+          .run(value, hit.id);
+        updated += 1;
+      } else {
+        unchanged += 1;
+      }
+    }
+
+    return { job, action, role: { key: roleKey, canonical_title: canonicalTitle }, facts: { inserted, updated, unchanged } };
+  });
+
+  try {
+    const result = sync();
+    res.status(200).json(result);
+  } catch (err) {
+    console.error('[sync/ashby-job] failed:', err);
+    res.status(500).json({ error: 'sync failed', detail: err.message });
+  }
 });
 
 // ---------- COMPANY FAQ (a.k.a. Global FAQ; company-wide, role-independent) ----------
@@ -664,7 +795,20 @@ async function resolveJobIdForApplication(applicationId, hintedJobId) {
   const info = await ashby.getApplicationInfo(applicationId);
   const app = (info && info.results) || info || {};
   const ashbyJobId = (app.job && app.job.id) || app.jobId || null;
-  const job = localJobByAshbyJobId(ashbyJobId);
+  // Legacy: a folder still anchored by a real Ashby UUID (pre role-collapse rows).
+  let job = localJobByAshbyJobId(ashbyJobId);
+  // Role-level match: folders are now one-per-role (location-agnostic), anchored by
+  // a canonical role key. Map this application's job title to that same role so an
+  // application from ANY country resolves to the single role folder.
+  if (!job) {
+    const rawTitle = (app.job && app.job.title) || app.jobTitle || null;
+    if (rawTitle) {
+      const { canonicalTitle, roleKey } = canonicalizeRole(rawTitle);
+      job =
+        db.prepare('SELECT * FROM jobs WHERE ashby_job_id = ?').get(roleKey) ||
+        db.prepare('SELECT * FROM jobs WHERE LOWER(name) = LOWER(?)').get(canonicalTitle);
+    }
+  }
   return job ? job.id : null;
 }
 
@@ -1230,6 +1374,12 @@ const SECRETS = [
     label: 'Ashby API key',
     hint: "Used for the app's own Ashby integration — syncing scores and candidate lookups.",
     env: 'ASHBY_API_KEY',
+  },
+  {
+    key: 'ashby_sync_api_key',
+    label: 'Ashby sync API key',
+    hint: 'Sent by the Ashby→dashboard sync workflow as x-api-key on POST /api/sync/ashby-job. Can create/update job folders and their Job Info facts, but not scoring/interview data — its own key to limit blast radius.',
+    env: 'ASHBY_SYNC_API_KEY',
   },
 ];
 
