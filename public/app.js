@@ -312,7 +312,6 @@ function renderParamsSection(container, params, scopeId) {
       <h2>Evaluation parameters</h2>
       <span class="weight-total">relative weights · auto-normalized</span>
     </div>
-    <div class="section-hint">Add each criterion and how important it is — any positive number. Weights don't need to add up to anything; the score uses each one's share of the total, shown as % below.</div>
     <div class="card">
       <div id="param-rows"></div>
       <form class="add-row-form" id="add-param-form">
@@ -410,7 +409,6 @@ function renderKillerSection(container, killers, jobId) {
     <div class="section-heading">
       <h2>Killer questions</h2>
     </div>
-    <div class="section-hint">Questions the interview agent will use to quickly rule out an already-qualified candidate. “Expects” is the answer that counts as a pass — set it to False when a “no” is the good answer.</div>
     <div class="killer-list" id="killer-list"></div>
     <form class="add-killer-form" id="add-killer-form">
       <textarea name="question" placeholder="Write the killer question…" required></textarea>
