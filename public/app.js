@@ -364,6 +364,19 @@ const MODE_META = {
   production:  { icon: '🟢', label: 'Production' },
 };
 
+// Per-state app configuration: what each folder lifecycle state enables in the
+// UI. Test screenings ("Run screening") are only allowed in Development —
+// disabled in Production (live) and Normal (parked). Extend with more per-mode
+// flags as needed.
+const MODE_CONFIG = {
+  normal:      { canRunScreening: false },
+  development: { canRunScreening: true },
+  production:  { canRunScreening: false },
+};
+function modeConfig(mode) {
+  return MODE_CONFIG[mode] || MODE_CONFIG.normal;
+}
+
 // Compact mode picker: a styled native <select> wrapped so the current mode's
 // colour dot is visible. Selecting an option calls switchMode() (wired
 // separately so the same markup can be reused on the folder + Testing views).
@@ -450,7 +463,9 @@ async function renderTestingView(jobId) {
   const job = state.jobs.find(j => j.id === jobId);
   if (!job) { state.testingJobId = null; return renderContent(); }
   const mode = job.mode || 'normal';
-  const isDev = mode === 'development';
+  // "Run screening" is gated by the per-state config: only Development can run
+  // test screenings; Production (live) and Normal (parked) disable the component.
+  const canRun = modeConfig(mode).canRunScreening;
 
   contentEl.innerHTML = `
     <button class="back-link" id="testing-back">← Back to criteria</button>
@@ -463,7 +478,7 @@ async function renderTestingView(jobId) {
         ${modeDropdownHtml(mode)}
       </div>
     </div>
-    ${isDev
+    ${canRun
       ? ''
       : `<div class="mode-banner mode-development testing-prompt">🟠 Set this folder to <strong>Development</strong> to run test screenings. Past results are still shown below.</div>`}
     <div class="section" id="testing-summary"></div>
@@ -474,7 +489,7 @@ async function renderTestingView(jobId) {
   wireModeDropdown(contentEl, jobId);
 
   await renderTestingSummary(document.getElementById('testing-summary'), jobId);
-  await renderDevSection(document.getElementById('dev-section'), jobId, { disabled: !isDev });
+  await renderDevSection(document.getElementById('dev-section'), jobId, { disabled: !canRun });
 }
 
 // Compact, read-only panel showing what a test CV is scored against: the job's
