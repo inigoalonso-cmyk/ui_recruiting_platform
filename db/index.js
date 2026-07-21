@@ -1,314 +1,132 @@
-const Database = require('better-sqlite3');
-const path = require('path');
+// Postgres (Supabase) data layer. Exposes a small async wrapper that mirrors the
+// shape of the old better-sqlite3 API — db.prepare(sql).get/all/run(...params),
+// db.exec(sql), db.transaction(fn) — so the route code changes are limited to
+// adding `await`. The only SQL dialect differences handled centrally here are:
+//   * `?` placeholders     -> `$1, $2, ...`
+//   * `datetime('now')`    -> a UTC text timestamp in the SAME 'YYYY-MM-DD HH24:MI:SS'
+//                             format the columns store (keeps API date strings identical).
+// Everything else (schema, contracts) is unchanged from the SQLite version.
+require('dotenv').config();
 const fs = require('fs');
+const path = require('path');
+const { Pool } = require('pg');
 
-// Railway: mount a persistent volume at /data if you want the DB to survive
-// redeploys. If there's no volume, we use a local file (it will be lost on each deploy).
-const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-
-const DB_PATH = path.join(DATA_DIR, 'platform.db');
-
-// Durability guard: this app stores ALL data (jobs, Job Info facts, screening
-// parameters, killer questions, recruiters) in this one SQLite file. On Railway
-// the container filesystem is EPHEMERAL — if DATA_DIR is not pointed at a mounted
-// persistent volume, the file (and every recruiter edit) is wiped on each
-// redeploy. Silently falling back to a local ./data dir is exactly how that data
-// loss goes unnoticed, so make the situation loud in the logs at boot.
-const onRailway = !!(process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID || process.env.RAILWAY_SERVICE_ID);
-if (!process.env.DATA_DIR) {
-  const warning =
-    `[db] DATA_DIR is not set — using "${DATA_DIR}". This path is on the ` +
-    `local/container filesystem. On Railway that is EPHEMERAL: all Job Info, ` +
-    `screening and recruiter data will be WIPED on the next redeploy. Set ` +
-    `DATA_DIR to a mounted volume path (e.g. /data) so data survives deploys.`;
-  if (onRailway) console.warn(`\n${'!'.repeat(72)}\n${warning}\n${'!'.repeat(72)}\n`);
-  else console.warn(`[db] ${warning}`);
-} else {
-  console.log(`[db] SQLite at ${DB_PATH} (DATA_DIR=${process.env.DATA_DIR}). Ensure a persistent volume is mounted at this path on Railway so data survives redeploys.`);
-}
-
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
-// Enforce declared foreign keys (SQLite defaults this OFF). Without it, the
-// ON DELETE CASCADE on parameters/killer_questions/recruiters never fires, so
-// deleting a job or recruiter folder would orphan its child rows.
-db.pragma('foreign_keys = ON');
-
-db.exec(`
-CREATE TABLE IF NOT EXISTS jobs (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  ashby_job_id TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- job_id = NULL means "general parameter" (applies to all jobs)
-CREATE TABLE IF NOT EXISTS parameters (
-  id TEXT PRIMARY KEY,
-  job_id TEXT REFERENCES jobs(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  weight REAL NOT NULL CHECK (weight >= 0 AND weight <= 10),
-  added_by TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- killer_questions are the true/false criteria the Agent Interview phase asks
--- verbally. weight lets the interview score be a weighted average (default 1 =
--- equal weighting); recruiters keep entering questions with no extra fields.
--- expected_answer is the answer that COUNTS AS A PASS for this question: some
--- questions are phrased so the desired answer is "false" (e.g. "Any restriction
--- that would stop you starting in 2 weeks?"). Defaults to 1 (true) so existing
--- rows keep the historical "true = pass" behavior.
-CREATE TABLE IF NOT EXISTS killer_questions (
-  id TEXT PRIMARY KEY,
-  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-  question TEXT NOT NULL,
-  weight REAL NOT NULL DEFAULT 1 CHECK (weight >= 0),
-  expected_answer INTEGER NOT NULL DEFAULT 1 CHECK (expected_answer IN (0, 1)),
-  added_by TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- Runtime-editable app settings (single value per key), edited from the
--- Settings page rather than env vars so recruiters can change them live.
-CREATE TABLE IF NOT EXISTS settings (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL,
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- Job Info facts: free-form label/value pairs about a role (salary, location,
--- remote policy, start date…) that the candidate-facing "JobBot" voice agent
--- looks up. Shares the same jobs table as Screening. job_id NULL = general
--- facts that apply to every job (mirrors the parameters table).
-CREATE TABLE IF NOT EXISTS job_info_facts (
-  id TEXT PRIMARY KEY,
-  job_id TEXT REFERENCES jobs(id) ON DELETE CASCADE,
-  label TEXT NOT NULL,
-  value TEXT NOT NULL,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_job_info_facts_job ON job_info_facts (job_id, sort_order);
-
--- Company FAQ (a.k.a. Global FAQ): company-wide, ROLE-INDEPENDENT facts the
--- JobBot voice agent can answer for ANY candidate regardless of the role they
--- applied to — office locations, funding, values/culture, interview process,
--- etc. Deliberately a SEPARATE table from job_info_facts: those are per-role
--- (and the job_id-NULL "General" ones get merged into every role's response),
--- whereas these stand alone and are served verbatim by GET /api/jobbot/global-faq.
--- Same free-form label/value + sort_order shape as job_info_facts so the
--- dashboard editor and the JobBot response mirror the Job Info tab exactly.
-CREATE TABLE IF NOT EXISTS company_faq (
-  id TEXT PRIMARY KEY,
-  label TEXT NOT NULL,
-  value TEXT NOT NULL,
-  sort_order INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_company_faq_sort ON company_faq (sort_order, created_at);
-
--- Prescreen (Phase 1) results land here.
-CREATE TABLE IF NOT EXISTS score_log (
-  id TEXT PRIMARY KEY,
-  job_id TEXT,
-  ashby_candidate_id TEXT,
-  ashby_application_id TEXT,
-  score REAL,
-  status TEXT,
-  breakdown TEXT,
-  synced_to_ashby INTEGER DEFAULT 0,
-  sync_error TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- Agent Interview (Phase 2) per-application state: the zero-engagement call
--- attempt counter and (as a fallback for Ashby's native stage-entry time) the
--- moment the application was first seen in the interview phase.
-CREATE TABLE IF NOT EXISTS interview_state (
-  application_id TEXT PRIMARY KEY,
-  job_id TEXT,
-  attempts INTEGER NOT NULL DEFAULT 0,
-  stage_entered_at TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- Raw result of each interview call, plus the deterministically-computed score.
-CREATE TABLE IF NOT EXISTS interview_results (
-  id TEXT PRIMARY KEY,
-  application_id TEXT NOT NULL,
-  job_id TEXT,
-  call_connected INTEGER,
-  answers TEXT,               -- JSON: [{ question_id, answer: true|false|null }]
-  callback_requested INTEGER,
-  call_notes TEXT,
-  score REAL,
-  passed INTEGER,
-  coverage_asked INTEGER,     -- questions actually asked/answered
-  coverage_total INTEGER,     -- total killer questions for the job
-  synced_to_ashby INTEGER DEFAULT 0,
-  sync_error TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_interview_results_application
-  ON interview_results (application_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_score_log_application
-  ON score_log (ashby_application_id, created_at DESC);
-
--- ---------- RECRUITERS ----------
--- The Recruiters section mirrors the Screening Criteria folder pattern: one
--- folder per job title (recruiter_jobs), each holding a list of recruiter
--- contacts. An external automation reads the primary recruiter per job title
--- via GET /api/recruiters?job=... (matched case-insensitively on name).
-CREATE TABLE IF NOT EXISTS recruiter_jobs (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS recruiters (
-  id TEXT PRIMARY KEY,
-  recruiter_job_id TEXT NOT NULL REFERENCES recruiter_jobs(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  email TEXT NOT NULL,
-  calendar_link TEXT NOT NULL,
-  notes TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE INDEX IF NOT EXISTS idx_recruiters_job
-  ON recruiters (recruiter_job_id, created_at);
-
--- ---------- UNANSWERED QUESTIONS (Suggested additions) ----------
--- Questions candidates asked the JobBot voice/chat agent that it could NOT
--- answer from the current Job Info facts. JobBot POSTs each one here (via a
--- dedicated write-only key, see requireUnansweredKey in routes/api.js). The
--- recruiter-facing "Suggested additions" view groups OPEN rows by exact-match
--- question text (case-insensitive, trimmed) and ranks them by frequency, so
--- recruiters see the most-asked gaps first and can turn them into Job Info
--- facts. role_label is the free-text role the agent reported (nullable — the
--- agent may not know it); it is NOT a foreign key to jobs, so these rows
--- survive job-folder deletes and don't need a cascade.
-CREATE TABLE IF NOT EXISTS unanswered_questions (
-  id TEXT PRIMARY KEY,
-  role_label TEXT,
-  question_text TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'resolved', 'dismissed')),
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
--- Aggregation groups OPEN rows by normalized text; this index keeps the
--- status filter + recency ordering cheap.
-CREATE INDEX IF NOT EXISTS idx_unanswered_status
-  ON unanswered_questions (status, created_at DESC);
-`);
-
-// ---------- Lightweight migrations for existing databases ----------
-// Add columns introduced after the initial schema without wiping data.
-function ensureColumn(table, column, ddl) {
-  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
-  if (!cols.some((c) => c.name === column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
-  }
-}
-
-// Older DBs have killer_questions without a weight column.
-ensureColumn('killer_questions', 'weight', 'weight REAL NOT NULL DEFAULT 1');
-// Older DBs predate the per-question expected answer (Part 1). Default 1 (true)
-// preserves the historical "true = pass" behavior for existing questions.
-ensureColumn('killer_questions', 'expected_answer', 'expected_answer INTEGER NOT NULL DEFAULT 1');
-
-// Job folders carry a lifecycle mode:
-//   'normal'      — editing/parking. Criteria are editable; NOT scored by anyone.
-//   'development' — manual sandbox: the recruiter runs the cloned "Prescreening
-//                   (Dev)" workflow against an uploaded test CV and sees the score
-//                   plus a per-parameter rationale. Never touches Ashby.
-//   'production'  — scored automatically by the 5-min Prescreening cron, exactly
-//                   as today. The cron skips any folder NOT in this mode.
-// Folders default to 'normal' (parked/editable, not scored) — the recruiter
-// promotes to 'development' to test and then 'production' to go live. On a fresh
-// DB every row starts 'normal'; new manual folders set it explicitly in
-// POST /api/jobs and the Ashby sync sets it explicitly too.
-ensureColumn('jobs', 'mode', "mode TEXT NOT NULL DEFAULT 'normal'");
-
-// Development sandbox runs. A folder in 'development' mode is tuned by uploading a
-// test CV and running the cloned "Prescreening Testing" workflow against it. Each
-// run is one row: created 'pending' by POST /api/jobs/:id/dev/run (which stores the
-// parsed CV text + a snapshot of the criteria used), then completed by the workflow
-// via POST /api/jobs/:id/dev/result (score + rationale + per-parameter reasoning).
-// NOTHING here ever touches Ashby — this data is test-only and folder-scoped.
-db.exec(`
-CREATE TABLE IF NOT EXISTS dev_test_runs (
-  id TEXT PRIMARY KEY,
-  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
-  candidate_name TEXT,
-  cv_filename TEXT,
-  cv_text TEXT,
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done', 'error')),
-  score REAL,
-  rationale TEXT,
-  passed INTEGER,
-  parameter_breakdown TEXT,      -- markdown string: the scoring agent's per-parameter "why"
-  parameter_reasoning TEXT,      -- (legacy/optional) JSON array [{parameter, importance, note}]
-  config_snapshot TEXT,          -- JSON of the criteria+weights used for this run
-  error TEXT,
-  created_by TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_dev_test_runs_job ON dev_test_runs (job_id, created_at DESC);
-`);
-
-// The Ashby → dashboard sync (POST /api/sync/ashby-job) upserts a job folder by
-// its Ashby job id, so that column must be unique to prevent two folders from
-// claiming the same Ashby job. A PARTIAL index (WHERE ashby_job_id IS NOT NULL)
-// keeps the many hand-made folders that have no Ashby id (all NULL) legal — NULLs
-// are exempt from the uniqueness check. Wrapped in try/catch so a pre-existing
-// duplicate can't crash boot: instead we warn loudly and leave the sync endpoint
-// to reject the ambiguous case at runtime.
-try {
-  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_ashby_job_id ON jobs (ashby_job_id) WHERE ashby_job_id IS NOT NULL');
-} catch (err) {
-  console.warn(
-    `[db] Could not create UNIQUE index on jobs.ashby_job_id — there are likely ` +
-    `duplicate ashby_job_id values already. Fix them so the Ashby sync stays ` +
-    `unambiguous. Underlying error: ${err.message}`,
+if (!process.env.DATABASE_URL) {
+  throw new Error(
+    '[db] DATABASE_URL is not set. Point it at the Supabase Postgres connection ' +
+    'string (locally via .env, on Railway via a service variable).',
   );
 }
 
-// Seed settings defaults once (INSERT OR IGNORE keeps user-edited values).
-// call_recording_enabled seeds from the legacy env var so behavior is unchanged
-// on first boot; after that it's controlled from the Settings page.
-const seedSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
-seedSetting.run('pass_threshold', '8');
-seedSetting.run('max_call_attempts', '3');
-seedSetting.run('call_recording_enabled', process.env.INTERVIEW_RECORDING_ENABLED === 'true' ? '1' : '0');
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+  max: Number(process.env.PG_POOL_MAX || 10),
+});
 
-// Seed the Company FAQ with starter content the FIRST time only (when the table
-// is completely empty), so GET /api/jobbot/global-faq never returns an empty
-// array before a recruiter has filled it in. Once any row exists — seeded or
-// edited — this never runs again, so it can't clobber dashboard edits. The
-// values below are starter placeholders; refine them from the Company FAQ tab.
-const companyFaqCount = db.prepare('SELECT COUNT(*) AS n FROM company_faq').get().n;
-if (companyFaqCount === 0) {
-  const { randomUUID } = require('crypto');
-  const seedFact = db.prepare('INSERT INTO company_faq (id, label, value, sort_order) VALUES (?, ?, ?, ?)');
-  const COMPANY_FAQ_SEED = [
-    ['Offices', 'San Francisco (HQ), Delaware, and Madrid, Spain.'],
-    ['Funding', '~$62M raised total. Series B: $44M in September 2025, led by Base10 Partners (~$500M valuation), with a16z, Y Combinator, Tokio Marine, WaVe-X, and World Innovation Lab participating. Series A: $15.6M in December 2024, led by a16z.'],
-    ['Founded', 'Founded in 2023 by Pablo Palafox, Luis Paarup, and Javi Palafox.'],
-    ['Values / culture', 'Responsibility (full ownership of what you build, including bugs and uptime), Excellence, Warmth & Approachability, merit-based hiring (ability over seniority), and first-principles thinking.'],
-    ['Interview process', 'Placeholder — fill in the standard interview process from the Company FAQ tab.'],
-  ];
-  const seedCompanyFaq = db.transaction((rows) => {
-    rows.forEach(([label, value], i) => seedFact.run(randomUUID(), label, value, i));
-  });
-  seedCompanyFaq(COMPANY_FAQ_SEED);
-  console.log(`[db] Seeded Company FAQ with ${COMPANY_FAQ_SEED.length} starter facts (table was empty).`);
+pool.on('error', (err) => {
+  // A pooled idle client dropped by the server — log, don't crash the process.
+  console.error('[db] idle client error:', err.message);
+});
+
+// UTC text timestamp matching how created_at/updated_at are stored (so the
+// frontend's `new Date(iso.replace(' ','T')+'Z')` parsing keeps working).
+const NOW_UTC = "to_char((now() AT TIME ZONE 'utc'), 'YYYY-MM-DD HH24:MI:SS')";
+
+// Translate the small set of SQLite-isms this codebase uses into Postgres.
+// NOTE: datetime('now') is replaced FIRST (it introduces no placeholders), then
+// each remaining `?` becomes $1, $2, ... in order.
+function translate(sql) {
+  const noDatetime = sql.replace(/datetime\('now'\)/g, NOW_UTC);
+  let i = 0;
+  return noDatetime.replace(/\?/g, () => `$${++i}`);
 }
 
-module.exports = db;
+// Build a prepared-statement-like object bound to a runner (pool or a tx client).
+function preparer(runner) {
+  return (sql) => {
+    const text = translate(sql);
+    return {
+      // Returns the first row, or undefined when there are none (matches better-sqlite3).
+      async get(...params) {
+        const r = await runner.query(text, params);
+        return r.rows[0];
+      },
+      async all(...params) {
+        const r = await runner.query(text, params);
+        return r.rows;
+      },
+      // Returns { changes } so existing `.run(...).changes` usages keep working.
+      async run(...params) {
+        const r = await runner.query(text, params);
+        return { changes: r.rowCount };
+      },
+    };
+  };
+}
+
+const prepare = preparer(pool);
+
+async function exec(sql) {
+  await pool.query(translate(sql));
+}
+
+// Run fn inside a single transaction. fn receives a mini-db whose prepare() is
+// bound to the transaction's client, so all statements inside share the tx.
+async function transaction(fn) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const txDb = { prepare: preparer(client), query: (s, p) => client.query(translate(s), p) };
+    const result = await fn(txDb);
+    await client.query('COMMIT');
+    return result;
+  } catch (err) {
+    try { await client.query('ROLLBACK'); } catch (_) { /* ignore */ }
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// Create the schema (idempotent) and seed defaults on first boot. Call once at startup.
+async function init() {
+  const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
+  await pool.query(schema);
+
+  // Seed runtime settings (only missing keys — never clobber edited values).
+  await pool.query(
+    `INSERT INTO settings (key, value) VALUES
+       ('pass_threshold', '8'),
+       ('max_call_attempts', '3'),
+       ('call_recording_enabled', $1)
+     ON CONFLICT (key) DO NOTHING`,
+    [process.env.INTERVIEW_RECORDING_ENABLED === 'true' ? '1' : '0'],
+  );
+
+  // Seed Company FAQ starter content ONLY when the table is completely empty, so
+  // GET /api/jobbot/global-faq is never empty on a brand-new DB. Never runs again
+  // once any row exists, so it can't clobber edits.
+  const { rows } = await pool.query('SELECT COUNT(*)::int AS n FROM company_faq');
+  if (rows[0].n === 0) {
+    const { randomUUID } = require('crypto');
+    const seed = [
+      ['Offices', 'San Francisco (HQ), Delaware, and Madrid, Spain.'],
+      ['Funding', '~$62M raised total. Series B: $44M in September 2025, led by Base10 Partners (~$500M valuation), with a16z, Y Combinator, Tokio Marine, WaVe-X, and World Innovation Lab participating. Series A: $15.6M in December 2024, led by a16z.'],
+      ['Founded', 'Founded in 2023 by Pablo Palafox, Luis Paarup, and Javi Palafox.'],
+      ['Values / culture', 'Responsibility (full ownership of what you build, including bugs and uptime), Excellence, Warmth & Approachability, merit-based hiring (ability over seniority), and first-principles thinking.'],
+      ['Interview process', 'Placeholder — fill in the standard interview process from the Company FAQ tab.'],
+    ];
+    for (let i = 0; i < seed.length; i++) {
+      await pool.query(
+        'INSERT INTO company_faq (id, label, value, sort_order) VALUES ($1, $2, $3, $4)',
+        [randomUUID(), seed[i][0], seed[i][1], i],
+      );
+    }
+    console.log(`[db] Seeded Company FAQ with ${seed.length} starter facts (table was empty).`);
+  }
+
+  console.log('[db] Postgres schema ready.');
+}
+
+module.exports = { prepare, exec, transaction, query: (s, p) => pool.query(translate(s), p), init, pool };

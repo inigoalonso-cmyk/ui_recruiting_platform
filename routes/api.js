@@ -21,26 +21,26 @@ const SETTING_DEFAULTS = { pass_threshold: '8', max_call_attempts: '3', call_rec
 // manual sandbox; 'normal' is the editing/parked state that nobody scores.
 const JOB_MODES = ['normal', 'development', 'production'];
 
-function getSetting(key) {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+async function getSetting(key) {
+  const row = await db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
   return row ? row.value : SETTING_DEFAULTS[key];
 }
-function setSetting(key, value) {
-  db.prepare(`
+async function setSetting(key, value) {
+  await db.prepare(`
     INSERT INTO settings (key, value) VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
   `).run(key, String(value));
 }
-function getPassThreshold() {
-  const n = Number(getSetting('pass_threshold'));
+async function getPassThreshold() {
+  const n = Number(await getSetting('pass_threshold'));
   return Number.isFinite(n) ? n : 8;
 }
-function getMaxCallAttempts() {
-  const n = parseInt(getSetting('max_call_attempts'), 10);
+async function getMaxCallAttempts() {
+  const n = parseInt(await getSetting('max_call_attempts'), 10);
   return Number.isInteger(n) && n > 0 ? n : 3;
 }
-function getRecordingEnabled() {
-  return getSetting('call_recording_enabled') === '1';
+async function getRecordingEnabled() {
+  return (await getSetting('call_recording_enabled')) === '1';
 }
 
 // ---------- Middleware: protect endpoints called by external workflows (Happy Robot) ----------
@@ -68,16 +68,16 @@ const requireSyncKey = keyGuard('ASHBY_SYNC_API_KEY');
 // Optional ?mode= filter (normal | development | production) so the prescreening
 // cron can fetch only the roles it should score in one call, e.g.
 // GET /api/jobs?mode=production. Without the param, returns every folder.
-router.get('/jobs', (req, res) => {
+router.get('/jobs', async (req, res) => {
   const { mode } = req.query;
   if (mode !== undefined) {
     if (!JOB_MODES.includes(mode)) {
       return res.status(400).json({ error: `mode must be one of: ${JOB_MODES.join(', ')}` });
     }
-    const jobs = db.prepare('SELECT * FROM jobs WHERE mode = ? ORDER BY created_at DESC').all(mode);
+    const jobs = await db.prepare('SELECT * FROM jobs WHERE mode = ? ORDER BY created_at DESC').all(mode);
     return res.json(jobs);
   }
-  const jobs = db.prepare('SELECT * FROM jobs ORDER BY created_at DESC').all();
+  const jobs = await db.prepare('SELECT * FROM jobs ORDER BY created_at DESC').all();
   res.json(jobs);
 });
 
@@ -86,97 +86,97 @@ router.get('/jobs', (req, res) => {
 // HTTP node — only its first element's fields get exposed). The workflow reads
 // job_ids to keep only candidates whose role is in production before the loop.
 // GET /api/jobs/production -> { job_ids: [...], count: N }
-router.get('/jobs/production', (req, res) => {
-  const rows = db.prepare("SELECT id FROM jobs WHERE mode = 'production' ORDER BY created_at DESC").all();
+router.get('/jobs/production', async (req, res) => {
+  const rows = await db.prepare("SELECT id FROM jobs WHERE mode = 'production' ORDER BY created_at DESC").all();
   const jobIds = rows.map((r) => r.id);
   res.json({ job_ids: jobIds, count: jobIds.length });
 });
 
-router.post('/jobs', (req, res) => {
+router.post('/jobs', async (req, res) => {
   const { name, ashby_job_id } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
   const id = uuid();
   // New manual folders start in 'normal' so the recruiter can set up criteria and
   // test them in the sandbox before promoting to 'production'.
-  db.prepare("INSERT INTO jobs (id, name, ashby_job_id, mode) VALUES (?, ?, ?, 'normal')").run(id, name.trim(), ashby_job_id || null);
-  res.status(201).json(db.prepare('SELECT * FROM jobs WHERE id = ?').get(id));
+  await db.prepare("INSERT INTO jobs (id, name, ashby_job_id, mode) VALUES (?, ?, ?, 'normal')").run(id, name.trim(), ashby_job_id || null);
+  res.status(201).json(await db.prepare('SELECT * FROM jobs WHERE id = ?').get(id));
 });
 
 // Switch a folder's lifecycle mode (normal | development | production). This is
 // the single control behind the folder-header state selector; the 5-min cron
 // reads it (via /evaluation-config) to decide whether to score the folder.
-router.put('/jobs/:id/mode', (req, res) => {
+router.put('/jobs/:id/mode', async (req, res) => {
   const { mode } = req.body;
   if (!JOB_MODES.includes(mode)) {
     return res.status(400).json({ error: `mode must be one of: ${JOB_MODES.join(', ')}` });
   }
-  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
+  const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ error: 'job not found' });
-  db.prepare('UPDATE jobs SET mode = ? WHERE id = ?').run(mode, req.params.id);
-  res.json(db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id));
+  await db.prepare('UPDATE jobs SET mode = ? WHERE id = ?').run(mode, req.params.id);
+  res.json(await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id));
 });
 
-router.put('/jobs/:id', (req, res) => {
+router.put('/jobs/:id', async (req, res) => {
   const { name, ashby_job_id } = req.body;
-  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
+  const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ error: 'job not found' });
-  db.prepare('UPDATE jobs SET name = COALESCE(?, name), ashby_job_id = COALESCE(?, ashby_job_id) WHERE id = ?')
+  await db.prepare('UPDATE jobs SET name = COALESCE(?, name), ashby_job_id = COALESCE(?, ashby_job_id) WHERE id = ?')
     .run(name || null, ashby_job_id || null, req.params.id);
-  res.json(db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id));
+  res.json(await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id));
 });
 
-router.delete('/jobs/:id', (req, res) => {
+router.delete('/jobs/:id', async (req, res) => {
   // Children (parameters, killer_questions, job_info_facts, dev_test_runs) are
   // removed automatically by their ON DELETE CASCADE foreign keys — the
   // foreign_keys pragma is enabled on this connection (see db/index.js).
-  db.prepare('DELETE FROM jobs WHERE id = ?').run(req.params.id);
+  await db.prepare('DELETE FROM jobs WHERE id = ?').run(req.params.id);
   res.status(204).end();
 });
 
 // ---------- PARAMETERS (general if :jobId === 'general', or per job) ----------
-router.get('/jobs/:jobId/parameters', (req, res) => {
+router.get('/jobs/:jobId/parameters', async (req, res) => {
   const jobId = req.params.jobId === 'general' ? null : req.params.jobId;
   const rows = jobId === null
-    ? db.prepare('SELECT * FROM parameters WHERE job_id IS NULL ORDER BY created_at').all()
-    : db.prepare('SELECT * FROM parameters WHERE job_id = ? ORDER BY created_at').all(jobId);
+    ? await db.prepare('SELECT * FROM parameters WHERE job_id IS NULL ORDER BY created_at').all()
+    : await db.prepare('SELECT * FROM parameters WHERE job_id = ? ORDER BY created_at').all(jobId);
   res.json(rows);
 });
 
-router.post('/jobs/:jobId/parameters', (req, res) => {
+router.post('/jobs/:jobId/parameters', async (req, res) => {
   const jobId = req.params.jobId === 'general' ? null : req.params.jobId;
   const { name, weight, added_by } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
   // 'general' (jobId null) is valid; any other jobId must be a real job.
-  if (jobId !== null && !db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(jobId)) {
+  if (jobId !== null && !(await db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(jobId))) {
     return res.status(404).json({ error: 'job not found' });
   }
   const w = Number(weight);
   if (Number.isNaN(w) || w < 0) return res.status(400).json({ error: 'weight must be a non-negative number' });
   const id = uuid();
-  db.prepare('INSERT INTO parameters (id, job_id, name, weight, added_by) VALUES (?, ?, ?, ?, ?)')
+  await db.prepare('INSERT INTO parameters (id, job_id, name, weight, added_by) VALUES (?, ?, ?, ?, ?)')
     .run(id, jobId, name.trim(), w, added_by || null);
-  res.status(201).json(db.prepare('SELECT * FROM parameters WHERE id = ?').get(id));
+  res.status(201).json(await db.prepare('SELECT * FROM parameters WHERE id = ?').get(id));
 });
 
-router.put('/parameters/:id', (req, res) => {
+router.put('/parameters/:id', async (req, res) => {
   const { name, weight } = req.body;
-  const existing = db.prepare('SELECT * FROM parameters WHERE id = ?').get(req.params.id);
+  const existing = await db.prepare('SELECT * FROM parameters WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'parameter not found' });
   const w = weight !== undefined ? Number(weight) : existing.weight;
   if (Number.isNaN(w) || w < 0) return res.status(400).json({ error: 'weight must be a non-negative number' });
-  db.prepare('UPDATE parameters SET name = COALESCE(?, name), weight = ? WHERE id = ?')
+  await db.prepare('UPDATE parameters SET name = COALESCE(?, name), weight = ? WHERE id = ?')
     .run(name || null, w, req.params.id);
-  res.json(db.prepare('SELECT * FROM parameters WHERE id = ?').get(req.params.id));
+  res.json(await db.prepare('SELECT * FROM parameters WHERE id = ?').get(req.params.id));
 });
 
-router.delete('/parameters/:id', (req, res) => {
-  db.prepare('DELETE FROM parameters WHERE id = ?').run(req.params.id);
+router.delete('/parameters/:id', async (req, res) => {
+  await db.prepare('DELETE FROM parameters WHERE id = ?').run(req.params.id);
   res.status(204).end();
 });
 
 // ---------- KILLER QUESTIONS (per job) ----------
-router.get('/jobs/:jobId/killer-questions', (req, res) => {
-  const rows = db.prepare('SELECT * FROM killer_questions WHERE job_id = ? ORDER BY created_at').all(req.params.jobId);
+router.get('/jobs/:jobId/killer-questions', async (req, res) => {
+  const rows = await db.prepare('SELECT * FROM killer_questions WHERE job_id = ? ORDER BY created_at').all(req.params.jobId);
   res.json(rows);
 });
 
@@ -188,12 +188,12 @@ function toExpected(v) {
   return 1;
 }
 
-router.post('/jobs/:jobId/killer-questions', (req, res) => {
+router.post('/jobs/:jobId/killer-questions', async (req, res) => {
   const { question, added_by, weight, expected_answer } = req.body;
   if (!question || !question.trim()) return res.status(400).json({ error: 'question is required' });
   // Killer questions are per real job (no 'general'). Reject unknown jobs with
   // a clean 404 rather than letting the FK constraint surface as a 500.
-  if (!db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(req.params.jobId)) {
+  if (!(await db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(req.params.jobId))) {
     return res.status(404).json({ error: 'job not found' });
   }
   // weight is optional (defaults to 1); the interview phase uses it for a
@@ -202,20 +202,20 @@ router.post('/jobs/:jobId/killer-questions', (req, res) => {
   if (Number.isNaN(w) || w < 0) return res.status(400).json({ error: 'weight must be a non-negative number' });
   const expected = toExpected(expected_answer); // defaults to 1 (true)
   const id = uuid();
-  db.prepare('INSERT INTO killer_questions (id, job_id, question, weight, expected_answer, added_by) VALUES (?, ?, ?, ?, ?, ?)')
+  await db.prepare('INSERT INTO killer_questions (id, job_id, question, weight, expected_answer, added_by) VALUES (?, ?, ?, ?, ?, ?)')
     .run(id, req.params.jobId, question.trim(), w, expected, added_by || null);
-  res.status(201).json(db.prepare('SELECT * FROM killer_questions WHERE id = ?').get(id));
+  res.status(201).json(await db.prepare('SELECT * FROM killer_questions WHERE id = ?').get(id));
 });
 
-router.put('/killer-questions/:id', (req, res) => {
-  const existing = db.prepare('SELECT * FROM killer_questions WHERE id = ?').get(req.params.id);
+router.put('/killer-questions/:id', async (req, res) => {
+  const existing = await db.prepare('SELECT * FROM killer_questions WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'killer question not found' });
   const { question, added_by, weight, expected_answer } = req.body;
   if (question !== undefined && !question.trim()) return res.status(400).json({ error: 'question cannot be empty' });
   const w = weight === undefined || weight === null || weight === '' ? existing.weight : Number(weight);
   if (Number.isNaN(w) || w < 0) return res.status(400).json({ error: 'weight must be a non-negative number' });
   const expected = expected_answer === undefined ? existing.expected_answer : toExpected(expected_answer);
-  db.prepare(`
+  await db.prepare(`
     UPDATE killer_questions SET
       question = COALESCE(?, question),
       weight = ?,
@@ -229,49 +229,49 @@ router.put('/killer-questions/:id', (req, res) => {
     added_by !== undefined ? (added_by || null) : existing.added_by,
     req.params.id,
   );
-  res.json(db.prepare('SELECT * FROM killer_questions WHERE id = ?').get(req.params.id));
+  res.json(await db.prepare('SELECT * FROM killer_questions WHERE id = ?').get(req.params.id));
 });
 
-router.delete('/killer-questions/:id', (req, res) => {
-  db.prepare('DELETE FROM killer_questions WHERE id = ?').run(req.params.id);
+router.delete('/killer-questions/:id', async (req, res) => {
+  await db.prepare('DELETE FROM killer_questions WHERE id = ?').run(req.params.id);
   res.status(204).end();
 });
 
 // ---------- JOB INFO FACTS (per job; job_id NULL = general) ----------
 // Recruiter-facing label/value facts for the candidate-facing JobBot agent.
-router.get('/jobs/:jobId/job-info', (req, res) => {
+router.get('/jobs/:jobId/job-info', async (req, res) => {
   const jobId = req.params.jobId === 'general' ? null : req.params.jobId;
   const rows = jobId === null
-    ? db.prepare('SELECT * FROM job_info_facts WHERE job_id IS NULL ORDER BY sort_order, created_at').all()
-    : db.prepare('SELECT * FROM job_info_facts WHERE job_id = ? ORDER BY sort_order, created_at').all(jobId);
+    ? await db.prepare('SELECT * FROM job_info_facts WHERE job_id IS NULL ORDER BY sort_order, created_at').all()
+    : await db.prepare('SELECT * FROM job_info_facts WHERE job_id = ? ORDER BY sort_order, created_at').all(jobId);
   res.json(rows);
 });
 
-router.post('/jobs/:jobId/job-info', (req, res) => {
+router.post('/jobs/:jobId/job-info', async (req, res) => {
   const jobId = req.params.jobId === 'general' ? null : req.params.jobId;
   const { label, value } = req.body;
   if (!label || !label.trim()) return res.status(400).json({ error: 'label is required' });
   if (value === undefined || value === null || !String(value).trim()) return res.status(400).json({ error: 'value is required' });
-  if (jobId !== null && !db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(jobId)) {
+  if (jobId !== null && !(await db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(jobId))) {
     return res.status(404).json({ error: 'job not found' });
   }
   // Append to the end of this job's list.
   const nextRow = jobId === null
-    ? db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM job_info_facts WHERE job_id IS NULL').get()
-    : db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM job_info_facts WHERE job_id = ?').get(jobId);
+    ? await db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM job_info_facts WHERE job_id IS NULL').get()
+    : await db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM job_info_facts WHERE job_id = ?').get(jobId);
   const id = uuid();
-  db.prepare('INSERT INTO job_info_facts (id, job_id, label, value, sort_order) VALUES (?, ?, ?, ?, ?)')
+  await db.prepare('INSERT INTO job_info_facts (id, job_id, label, value, sort_order) VALUES (?, ?, ?, ?, ?)')
     .run(id, jobId, label.trim(), String(value).trim(), nextRow.n);
-  res.status(201).json(db.prepare('SELECT * FROM job_info_facts WHERE id = ?').get(id));
+  res.status(201).json(await db.prepare('SELECT * FROM job_info_facts WHERE id = ?').get(id));
 });
 
-router.put('/job-info/:id', (req, res) => {
-  const existing = db.prepare('SELECT * FROM job_info_facts WHERE id = ?').get(req.params.id);
+router.put('/job-info/:id', async (req, res) => {
+  const existing = await db.prepare('SELECT * FROM job_info_facts WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'fact not found' });
   const { label, value } = req.body;
   if (label !== undefined && !label.trim()) return res.status(400).json({ error: 'label cannot be empty' });
   if (value !== undefined && !String(value).trim()) return res.status(400).json({ error: 'value cannot be empty' });
-  db.prepare(`
+  await db.prepare(`
     UPDATE job_info_facts
        SET label = COALESCE(?, label), value = COALESCE(?, value), updated_at = datetime('now')
      WHERE id = ?
@@ -280,11 +280,11 @@ router.put('/job-info/:id', (req, res) => {
     value !== undefined ? String(value).trim() : null,
     req.params.id,
   );
-  res.json(db.prepare('SELECT * FROM job_info_facts WHERE id = ?').get(req.params.id));
+  res.json(await db.prepare('SELECT * FROM job_info_facts WHERE id = ?').get(req.params.id));
 });
 
-router.delete('/job-info/:id', (req, res) => {
-  db.prepare('DELETE FROM job_info_facts WHERE id = ?').run(req.params.id);
+router.delete('/job-info/:id', async (req, res) => {
+  await db.prepare('DELETE FROM job_info_facts WHERE id = ?').run(req.params.id);
   res.status(204).end();
 });
 
@@ -315,7 +315,7 @@ router.delete('/job-info/:id', (req, res) => {
 //      Screening folder appear, which is exactly the intended behavior.
 // Everything runs in a single transaction so a partial failure leaves no
 // half-synced folder behind.
-router.post('/sync/ashby-job', requireSyncKey, (req, res) => {
+router.post('/sync/ashby-job', requireSyncKey, async (req, res) => {
   const { title, facts } = req.body || {};
   if (!title || !String(title).trim()) {
     return res.status(400).json({ error: 'title is required' });
@@ -340,63 +340,61 @@ router.post('/sync/ashby-job', requireSyncKey, (req, res) => {
     cleanFacts.push({ label, value });
   }
 
-  const sync = db.transaction(() => {
-    // 1. Resolve the folder by its canonical role key.
-    let job = db.prepare('SELECT * FROM jobs WHERE ashby_job_id = ?').get(roleKey);
-    let action;
-    if (job) {
-      action = 'updated';
-    } else {
-      // Adopt a manually-created folder whose name matches the canonical role and
-      // has no anchor yet (the hand-made folders). Only adopt UNCLAIMED ones so we
-      // never steal a folder already bound to a different role.
-      const orphan = db
-        .prepare('SELECT * FROM jobs WHERE LOWER(name) = LOWER(?) AND ashby_job_id IS NULL')
-        .get(canonicalTitle);
-      if (orphan) {
-        db.prepare('UPDATE jobs SET ashby_job_id = ? WHERE id = ?').run(roleKey, orphan.id);
-        job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(orphan.id);
-        action = 'adopted';
-      } else {
-        const id = uuid();
-        // Sync-created folders start in 'normal' (not scored) until a recruiter
-        // sets them up and promotes them to production.
-        db.prepare("INSERT INTO jobs (id, name, ashby_job_id, mode) VALUES (?, ?, ?, 'normal')").run(id, canonicalTitle, roleKey);
-        job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
-        action = 'created';
-      }
-    }
-
-    // 2. Upsert facts by label (case-insensitive). We never rename the folder on
-    //    update — recruiters may have curated the display name — so `title` only
-    //    matters at create/adopt time.
-    const existing = db.prepare('SELECT * FROM job_info_facts WHERE job_id = ?').all(job.id);
-    const byLabel = new Map(existing.map((r) => [r.label.toLowerCase(), r]));
-    let maxSort = existing.reduce((m, r) => Math.max(m, r.sort_order), -1);
-    let inserted = 0;
-    let updated = 0;
-    let unchanged = 0;
-    for (const { label, value } of cleanFacts) {
-      const hit = byLabel.get(label.toLowerCase());
-      if (!hit) {
-        maxSort += 1;
-        db.prepare('INSERT INTO job_info_facts (id, job_id, label, value, sort_order) VALUES (?, ?, ?, ?, ?)')
-          .run(uuid(), job.id, label, value, maxSort);
-        inserted += 1;
-      } else if (hit.value !== value) {
-        db.prepare("UPDATE job_info_facts SET value = ?, updated_at = datetime('now') WHERE id = ?")
-          .run(value, hit.id);
-        updated += 1;
-      } else {
-        unchanged += 1;
-      }
-    }
-
-    return { job, action, role: { key: roleKey, canonical_title: canonicalTitle }, facts: { inserted, updated, unchanged } };
-  });
-
   try {
-    const result = sync();
+    const result = await db.transaction(async (txDb) => {
+      // 1. Resolve the folder by its canonical role key.
+      let job = await txDb.prepare('SELECT * FROM jobs WHERE ashby_job_id = ?').get(roleKey);
+      let action;
+      if (job) {
+        action = 'updated';
+      } else {
+        // Adopt a manually-created folder whose name matches the canonical role and
+        // has no anchor yet (the hand-made folders). Only adopt UNCLAIMED ones so we
+        // never steal a folder already bound to a different role.
+        const orphan = await txDb
+          .prepare('SELECT * FROM jobs WHERE LOWER(name) = LOWER(?) AND ashby_job_id IS NULL')
+          .get(canonicalTitle);
+        if (orphan) {
+          await txDb.prepare('UPDATE jobs SET ashby_job_id = ? WHERE id = ?').run(roleKey, orphan.id);
+          job = await txDb.prepare('SELECT * FROM jobs WHERE id = ?').get(orphan.id);
+          action = 'adopted';
+        } else {
+          const id = uuid();
+          // Sync-created folders start in 'normal' (not scored) until a recruiter
+          // sets them up and promotes them to production.
+          await txDb.prepare("INSERT INTO jobs (id, name, ashby_job_id, mode) VALUES (?, ?, ?, 'normal')").run(id, canonicalTitle, roleKey);
+          job = await txDb.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
+          action = 'created';
+        }
+      }
+
+      // 2. Upsert facts by label (case-insensitive). We never rename the folder on
+      //    update — recruiters may have curated the display name — so `title` only
+      //    matters at create/adopt time.
+      const existing = await txDb.prepare('SELECT * FROM job_info_facts WHERE job_id = ?').all(job.id);
+      const byLabel = new Map(existing.map((r) => [r.label.toLowerCase(), r]));
+      let maxSort = existing.reduce((m, r) => Math.max(m, r.sort_order), -1);
+      let inserted = 0;
+      let updated = 0;
+      let unchanged = 0;
+      for (const { label, value } of cleanFacts) {
+        const hit = byLabel.get(label.toLowerCase());
+        if (!hit) {
+          maxSort += 1;
+          await txDb.prepare('INSERT INTO job_info_facts (id, job_id, label, value, sort_order) VALUES (?, ?, ?, ?, ?)')
+            .run(uuid(), job.id, label, value, maxSort);
+          inserted += 1;
+        } else if (hit.value !== value) {
+          await txDb.prepare("UPDATE job_info_facts SET value = ?, updated_at = datetime('now') WHERE id = ?")
+            .run(value, hit.id);
+          updated += 1;
+        } else {
+          unchanged += 1;
+        }
+      }
+
+      return { job, action, role: { key: roleKey, canonical_title: canonicalTitle }, facts: { inserted, updated, unchanged } };
+    });
     res.status(200).json(result);
   } catch (err) {
     console.error('[sync/ashby-job] failed:', err);
@@ -410,28 +408,28 @@ router.post('/sync/ashby-job', requireSyncKey, (req, res) => {
 // A single flat global list — no job_id, no folders. Same open (browser)
 // access as the Job Info CRUD above; the read-only JobBot surface is the
 // separately-keyed GET /jobbot/global-faq below.
-router.get('/company-faq', (req, res) => {
-  res.json(db.prepare('SELECT * FROM company_faq ORDER BY sort_order, created_at').all());
+router.get('/company-faq', async (req, res) => {
+  res.json(await db.prepare('SELECT * FROM company_faq ORDER BY sort_order, created_at').all());
 });
 
-router.post('/company-faq', (req, res) => {
+router.post('/company-faq', async (req, res) => {
   const { label, value } = req.body;
   if (!label || !label.trim()) return res.status(400).json({ error: 'label is required' });
   if (value === undefined || value === null || !String(value).trim()) return res.status(400).json({ error: 'value is required' });
-  const nextRow = db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM company_faq').get();
+  const nextRow = await db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM company_faq').get();
   const id = uuid();
-  db.prepare('INSERT INTO company_faq (id, label, value, sort_order) VALUES (?, ?, ?, ?)')
+  await db.prepare('INSERT INTO company_faq (id, label, value, sort_order) VALUES (?, ?, ?, ?)')
     .run(id, label.trim(), String(value).trim(), nextRow.n);
-  res.status(201).json(db.prepare('SELECT * FROM company_faq WHERE id = ?').get(id));
+  res.status(201).json(await db.prepare('SELECT * FROM company_faq WHERE id = ?').get(id));
 });
 
-router.put('/company-faq/:id', (req, res) => {
-  const existing = db.prepare('SELECT * FROM company_faq WHERE id = ?').get(req.params.id);
+router.put('/company-faq/:id', async (req, res) => {
+  const existing = await db.prepare('SELECT * FROM company_faq WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'fact not found' });
   const { label, value } = req.body;
   if (label !== undefined && !label.trim()) return res.status(400).json({ error: 'label cannot be empty' });
   if (value !== undefined && !String(value).trim()) return res.status(400).json({ error: 'value cannot be empty' });
-  db.prepare(`
+  await db.prepare(`
     UPDATE company_faq
        SET label = COALESCE(?, label), value = COALESCE(?, value), updated_at = datetime('now')
      WHERE id = ?
@@ -440,11 +438,11 @@ router.put('/company-faq/:id', (req, res) => {
     value !== undefined ? String(value).trim() : null,
     req.params.id,
   );
-  res.json(db.prepare('SELECT * FROM company_faq WHERE id = ?').get(req.params.id));
+  res.json(await db.prepare('SELECT * FROM company_faq WHERE id = ?').get(req.params.id));
 });
 
-router.delete('/company-faq/:id', (req, res) => {
-  db.prepare('DELETE FROM company_faq WHERE id = ?').run(req.params.id);
+router.delete('/company-faq/:id', async (req, res) => {
+  await db.prepare('DELETE FROM company_faq WHERE id = ?').run(req.params.id);
   res.status(204).end();
 });
 
@@ -452,16 +450,16 @@ router.delete('/company-faq/:id', (req, res) => {
 // Resolves a job by Ashby job id first, then by name (case-insensitive), and
 // returns its facts (job-specific first, then general facts that apply to all
 // jobs). Always 200 with a `found` flag; 400 only when `job` is missing.
-router.get('/jobinfo/lookup', requireInternalKey, (req, res) => {
+router.get('/jobinfo/lookup', requireInternalKey, async (req, res) => {
   const q = (req.query.job || '').trim();
   if (!q) return res.status(400).json({ error: 'job query parameter is required' });
 
-  let job = db.prepare('SELECT id, name, ashby_job_id FROM jobs WHERE ashby_job_id = ?').get(q);
-  if (!job) job = db.prepare('SELECT id, name, ashby_job_id FROM jobs WHERE lower(trim(name)) = lower(?)').get(q);
+  let job = await db.prepare('SELECT id, name, ashby_job_id FROM jobs WHERE ashby_job_id = ?').get(q);
+  if (!job) job = await db.prepare('SELECT id, name, ashby_job_id FROM jobs WHERE lower(trim(name)) = lower(?)').get(q);
   if (!job) return res.json({ found: false });
 
-  const jobFacts = db.prepare('SELECT label, value FROM job_info_facts WHERE job_id = ? ORDER BY sort_order, created_at').all(job.id);
-  const generalFacts = db.prepare('SELECT label, value FROM job_info_facts WHERE job_id IS NULL ORDER BY sort_order, created_at').all();
+  const jobFacts = await db.prepare('SELECT label, value FROM job_info_facts WHERE job_id = ? ORDER BY sort_order, created_at').all(job.id);
+  const generalFacts = await db.prepare('SELECT label, value FROM job_info_facts WHERE job_id IS NULL ORDER BY sort_order, created_at').all();
   res.json({
     found: true,
     job: { id: job.id, name: job.name, ashby_job_id: job.ashby_job_id || null },
@@ -487,26 +485,26 @@ function jobSlug(name) {
 
 // Resolve a job by (in order) id, Ashby job id, exact case-insensitive name, or
 // derived slug. Returns the job row ({ id, name, ashby_job_id }) or null.
-function resolveJobByTitleOrSlug(q) {
+async function resolveJobByTitleOrSlug(q) {
   const needle = String(q || '').trim();
   if (!needle) return null;
-  let job = db.prepare('SELECT id, name, ashby_job_id FROM jobs WHERE id = ? OR ashby_job_id = ?').get(needle, needle);
-  if (!job) job = db.prepare('SELECT id, name, ashby_job_id FROM jobs WHERE lower(trim(name)) = lower(?)').get(needle);
+  let job = await db.prepare('SELECT id, name, ashby_job_id FROM jobs WHERE id = ? OR ashby_job_id = ?').get(needle, needle);
+  if (!job) job = await db.prepare('SELECT id, name, ashby_job_id FROM jobs WHERE lower(trim(name)) = lower(?)').get(needle);
   if (!job) {
     const wanted = jobSlug(needle);
-    job = db.prepare('SELECT id, name, ashby_job_id FROM jobs').all().find((j) => jobSlug(j.name) === wanted) || null;
+    job = (await db.prepare('SELECT id, name, ashby_job_id FROM jobs').all()).find((j) => jobSlug(j.name) === wanted) || null;
   }
   return job;
 }
 
 // General facts (job_id NULL) that apply to every job, in display order.
-function generalFacts() {
-  return db.prepare('SELECT label, value FROM job_info_facts WHERE job_id IS NULL ORDER BY sort_order, created_at').all();
+async function generalFacts() {
+  return await db.prepare('SELECT label, value FROM job_info_facts WHERE job_id IS NULL ORDER BY sort_order, created_at').all();
 }
 
 // 1. List every configured job so the caller can validate/match a role name.
-router.get('/jobbot/jobs', requireJobbotKey, (req, res) => {
-  const jobs = db.prepare('SELECT name, ashby_job_id FROM jobs ORDER BY name').all();
+router.get('/jobbot/jobs', requireJobbotKey, async (req, res) => {
+  const jobs = await db.prepare('SELECT name, ashby_job_id FROM jobs ORDER BY name').all();
   res.json({
     jobs: jobs.map((j) => ({
       title: j.name,
@@ -518,8 +516,8 @@ router.get('/jobbot/jobs', requireJobbotKey, (req, res) => {
 
 // 3. General facts that apply to every job. Registered BEFORE the :titleOrSlug
 // route below so the literal "general" is never captured as a job name/slug.
-router.get('/jobbot/jobs/general', requireJobbotKey, (req, res) => {
-  res.json({ title: 'General', slug: 'general', facts: generalFacts() });
+router.get('/jobbot/jobs/general', requireJobbotKey, async (req, res) => {
+  res.json({ title: 'General', slug: 'general', facts: await generalFacts() });
 });
 
 // 4. Company-wide FAQ (a.k.a. Global FAQ): role-INDEPENDENT facts that apply to
@@ -530,26 +528,26 @@ router.get('/jobbot/jobs/general', requireJobbotKey, (req, res) => {
 // Registered BEFORE the :titleOrSlug route so "global-faq" is never captured as
 // a job name/slug. Kept lightweight (one indexed table read, no joins) because
 // the voice workflow calls it once at the very start of each conversation.
-router.get('/jobbot/global-faq', requireJobbotKey, (req, res) => {
-  const facts = db.prepare('SELECT label, value FROM company_faq ORDER BY sort_order, created_at').all();
+router.get('/jobbot/global-faq', requireJobbotKey, async (req, res) => {
+  const facts = await db.prepare('SELECT label, value FROM company_faq ORDER BY sort_order, created_at').all();
   res.json({ title: 'Company FAQ', slug: 'global-faq', facts });
 });
 
 // 2. Facts for one job, WITH the general facts merged in (job-specific first,
 // then general) — matching the UI copy "JobBot includes these alongside each
 // job's own facts" and the existing /jobinfo/lookup behavior. 404 if unknown.
-router.get('/jobbot/jobs/:titleOrSlug', requireJobbotKey, (req, res) => {
-  const job = resolveJobByTitleOrSlug(req.params.titleOrSlug);
+router.get('/jobbot/jobs/:titleOrSlug', requireJobbotKey, async (req, res) => {
+  const job = await resolveJobByTitleOrSlug(req.params.titleOrSlug);
   if (!job) {
     return res.status(404).json({ error: 'job not found', titleOrSlug: req.params.titleOrSlug });
   }
-  const own = db.prepare('SELECT label, value FROM job_info_facts WHERE job_id = ? ORDER BY sort_order, created_at').all(job.id);
+  const own = await db.prepare('SELECT label, value FROM job_info_facts WHERE job_id = ? ORDER BY sort_order, created_at').all(job.id);
   res.json({
     title: job.name,
     slug: jobSlug(job.name),
     ashby_job_id: job.ashby_job_id || null,
     generalFactsMerged: true,
-    facts: [...own, ...generalFacts()],
+    facts: [...own, ...(await generalFacts())],
   });
 });
 
@@ -579,7 +577,7 @@ function toSqliteUtc(ts) {
 // POST /jobbot/unanswered-questions  — write-only, guarded by requireUnansweredKey.
 // Body: { role_label?, question, timestamp? }. Records ONE unanswered question.
 // Always the only thing this key can do.
-router.post('/jobbot/unanswered-questions', requireUnansweredKey, (req, res) => {
+router.post('/jobbot/unanswered-questions', requireUnansweredKey, async (req, res) => {
   const { role_label, question, timestamp } = req.body || {};
   if (!question || !String(question).trim()) {
     return res.status(400).json({ error: 'question is required' });
@@ -588,29 +586,29 @@ router.post('/jobbot/unanswered-questions', requireUnansweredKey, (req, res) => 
   const createdAt = toSqliteUtc(timestamp);
   const label = role_label && String(role_label).trim() ? String(role_label).trim() : null;
   if (createdAt) {
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO unanswered_questions (id, role_label, question_text, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(id, label, String(question).trim(), createdAt, createdAt);
   } else {
-    db.prepare(`
+    await db.prepare(`
       INSERT INTO unanswered_questions (id, role_label, question_text)
       VALUES (?, ?, ?)
     `).run(id, label, String(question).trim());
   }
-  res.status(201).json(db.prepare('SELECT id, role_label, question_text, status, created_at FROM unanswered_questions WHERE id = ?').get(id));
+  res.status(201).json(await db.prepare('SELECT id, role_label, question_text, status, created_at FROM unanswered_questions WHERE id = ?').get(id));
 });
 
 // GET /unanswered-questions?status=open  — recruiter-facing (browser). Groups
 // rows by normalized question text and ranks by frequency (count desc, then
 // most-recent). Each group carries every row id in it so the actions below can
 // resolve/dismiss the whole cluster of duplicates at once.
-router.get('/unanswered-questions', (req, res) => {
+router.get('/unanswered-questions', async (req, res) => {
   const status = (req.query.status || 'open').trim();
   if (!['open', 'resolved', 'dismissed'].includes(status)) {
     return res.status(400).json({ error: "status must be one of open, resolved, dismissed" });
   }
-  const rows = db.prepare(
+  const rows = await db.prepare(
     'SELECT id, role_label, question_text, created_at FROM unanswered_questions WHERE status = ? ORDER BY created_at DESC'
   ).all(status);
 
@@ -651,21 +649,21 @@ function readIds(body) {
   return clean.length ? clean : null;
 }
 
-function markStatus(ids, status) {
-  const stmt = db.prepare("UPDATE unanswered_questions SET status = ?, updated_at = datetime('now') WHERE id = ? AND status = 'open'");
-  const tx = db.transaction((list) => {
+async function markStatus(ids, status) {
+  return await db.transaction(async (txDb) => {
     let n = 0;
-    for (const id of list) n += stmt.run(status, id).changes;
+    for (const id of ids) {
+      n += (await txDb.prepare("UPDATE unanswered_questions SET status = ?, updated_at = datetime('now') WHERE id = ? AND status = 'open'").run(status, id)).changes;
+    }
     return n;
   });
-  return tx(ids);
 }
 
 // POST /unanswered-questions/dismiss  — { ids: [...] } → status = dismissed.
-router.post('/unanswered-questions/dismiss', (req, res) => {
+router.post('/unanswered-questions/dismiss', async (req, res) => {
   const ids = readIds(req.body);
   if (!ids) return res.status(400).json({ error: 'ids must be a non-empty array' });
-  const dismissed = markStatus(ids, 'dismissed');
+  const dismissed = await markStatus(ids, 'dismissed');
   res.json({ dismissed });
 });
 
@@ -674,7 +672,7 @@ router.post('/unanswered-questions/dismiss', (req, res) => {
 // Creates a Job Info fact in the given folder (job_id 'general' or null =
 // General facts) AND marks the supplied open questions resolved — atomically,
 // so a fact is never created without clearing the questions and vice-versa.
-router.post('/unanswered-questions/add-to-job-info', (req, res) => {
+router.post('/unanswered-questions/add-to-job-info', async (req, res) => {
   const { job_id, label, value } = req.body || {};
   const ids = readIds(req.body);
   if (!ids) return res.status(400).json({ error: 'ids must be a non-empty array' });
@@ -682,38 +680,38 @@ router.post('/unanswered-questions/add-to-job-info', (req, res) => {
   if (value === undefined || value === null || !String(value).trim()) return res.status(400).json({ error: 'value is required' });
 
   const jobId = job_id === 'general' || job_id === undefined || job_id === null || job_id === '' ? null : job_id;
-  if (jobId !== null && !db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(jobId)) {
+  if (jobId !== null && !(await db.prepare('SELECT 1 FROM jobs WHERE id = ?').get(jobId))) {
     return res.status(404).json({ error: 'job not found' });
   }
 
   const factId = uuid();
-  const tx = db.transaction(() => {
+  const resolved = await db.transaction(async (txDb) => {
     const nextRow = jobId === null
-      ? db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM job_info_facts WHERE job_id IS NULL').get()
-      : db.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM job_info_facts WHERE job_id = ?').get(jobId);
-    db.prepare('INSERT INTO job_info_facts (id, job_id, label, value, sort_order) VALUES (?, ?, ?, ?, ?)')
+      ? await txDb.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM job_info_facts WHERE job_id IS NULL').get()
+      : await txDb.prepare('SELECT COALESCE(MAX(sort_order), -1) + 1 AS n FROM job_info_facts WHERE job_id = ?').get(jobId);
+    await txDb.prepare('INSERT INTO job_info_facts (id, job_id, label, value, sort_order) VALUES (?, ?, ?, ?, ?)')
       .run(factId, jobId, String(label).trim(), String(value).trim(), nextRow.n);
-    const stmt = db.prepare("UPDATE unanswered_questions SET status = 'resolved', updated_at = datetime('now') WHERE id = ? AND status = 'open'");
-    let resolved = 0;
-    for (const id of ids) resolved += stmt.run(id).changes;
-    return resolved;
+    let n = 0;
+    for (const id of ids) {
+      n += (await txDb.prepare("UPDATE unanswered_questions SET status = 'resolved', updated_at = datetime('now') WHERE id = ? AND status = 'open'").run(id)).changes;
+    }
+    return n;
   });
-  const resolved = tx();
 
   res.status(201).json({
-    fact: db.prepare('SELECT * FROM job_info_facts WHERE id = ?').get(factId),
+    fact: await db.prepare('SELECT * FROM job_info_facts WHERE id = ?').get(factId),
     resolved,
   });
 });
 
 // ---------- CONSOLIDATED CONFIG: what Happy Robot consumes to evaluate a candidate ----------
-router.get('/jobs/:jobId/evaluation-config', requireInternalKey, (req, res) => {
-  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.jobId);
+router.get('/jobs/:jobId/evaluation-config', requireInternalKey, async (req, res) => {
+  const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'job not found' });
 
-  const generalParams = db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL').all();
-  const jobParams = db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ?').all(job.id);
-  const killerQuestions = db.prepare('SELECT question, added_by FROM killer_questions WHERE job_id = ?').all(job.id);
+  const generalParams = await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL').all();
+  const jobParams = await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ?').all(job.id);
+  const killerQuestions = await db.prepare('SELECT question, added_by FROM killer_questions WHERE job_id = ?').all(job.id);
 
   // Weights are relative importance, not a fixed /10 scale. Normalize each
   // criterion by the total across all parameters that apply to this job
@@ -756,7 +754,7 @@ router.post('/candidates/score', requireInternalKey, async (req, res) => {
   }
 
   const id = uuid();
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO score_log (id, job_id, ashby_candidate_id, ashby_application_id, score, status, breakdown, synced_to_ashby)
     VALUES (?, ?, ?, ?, ?, ?, ?, 0)
   `).run(id, job_id || null, ashby_candidate_id || null, ashby_application_id || null, Number(score), status || null, JSON.stringify(breakdown || null));
@@ -771,10 +769,10 @@ router.post('/candidates/score', requireInternalKey, async (req, res) => {
       if (!objectId) throw new Error(`Missing ${objectType === 'Candidate' ? 'ashby_candidate_id' : 'ashby_application_id'} in the request`);
 
       await ashby.setCustomFieldScore({ objectId, objectType, fieldId, value: Number(score) });
-      db.prepare('UPDATE score_log SET synced_to_ashby = 1 WHERE id = ?').run(id);
+      await db.prepare('UPDATE score_log SET synced_to_ashby = 1 WHERE id = ?').run(id);
       syncResult = { synced: true };
     } catch (err) {
-      db.prepare('UPDATE score_log SET sync_error = ? WHERE id = ?').run(err.message, id);
+      await db.prepare('UPDATE score_log SET sync_error = ? WHERE id = ?').run(err.message, id);
       syncResult = { synced: false, error: err.message };
     }
   }
@@ -782,8 +780,8 @@ router.post('/candidates/score', requireInternalKey, async (req, res) => {
   res.status(201).json({ log_id: id, sync: syncResult });
 });
 
-router.get('/score-log', (req, res) => {
-  const rows = db.prepare('SELECT * FROM score_log ORDER BY created_at DESC LIMIT 200').all();
+router.get('/score-log', async (req, res) => {
+  const rows = await db.prepare('SELECT * FROM score_log ORDER BY created_at DESC LIMIT 200').all();
   res.json(rows);
 });
 
@@ -802,9 +800,9 @@ function safeParseJson(str, fallback) {
 }
 
 // Shape a dev run row for the UI: booleans/JSON parsed, verdict derived live.
-function presentDevRun(r) {
+async function presentDevRun(r) {
   if (!r) return r;
-  const threshold = getPassThreshold();
+  const threshold = await getPassThreshold();
   return {
     ...r,
     score: r.score == null ? null : Number(r.score),
@@ -842,7 +840,7 @@ async function extractCvText(file) {
 // cloned "Prescreening Testing" workflow. The workflow scores + explains and calls
 // back POST /dev/result. Only allowed while the folder is in 'development' mode.
 router.post('/jobs/:id/dev/run', uploadCv.single('cv'), async (req, res) => {
-  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
+  const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ error: 'job not found' });
   if (job.mode !== 'development') {
     return res.status(409).json({ error: "folder must be in 'development' mode to run the sandbox" });
@@ -861,13 +859,13 @@ router.post('/jobs/:id/dev/run', uploadCv.single('cv'), async (req, res) => {
 
   // Snapshot the criteria used for this run (general + job-specific + killer qs).
   const configSnapshot = {
-    general_parameters: db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL').all(),
-    job_parameters: db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ?').all(job.id),
-    killer_questions: db.prepare('SELECT question, expected_answer, added_by FROM killer_questions WHERE job_id = ?').all(job.id),
+    general_parameters: await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL').all(),
+    job_parameters: await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ?').all(job.id),
+    killer_questions: await db.prepare('SELECT question, expected_answer, added_by FROM killer_questions WHERE job_id = ?').all(job.id),
   };
 
   const runId = uuid();
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO dev_test_runs (id, job_id, candidate_name, cv_filename, cv_text, status, config_snapshot, created_by)
     VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
   `).run(runId, job.id, candidateName, req.file.originalname || null, cvText, JSON.stringify(configSnapshot), req.body.created_by || null);
@@ -878,7 +876,7 @@ router.post('/jobs/:id/dev/run', uploadCv.single('cv'), async (req, res) => {
   // started, mark it 'error' so the UI shows why instead of hanging.
   const triggerUrl = process.env.PRESCREENING_TESTING_TRIGGER_URL
     || 'https://workflows.platform.happyrobot.ai/hooks/s7tv6b29ya03';
-  const markError = (msg) => db.prepare("UPDATE dev_test_runs SET status='error', error=?, updated_at=datetime('now') WHERE id=?").run(msg, runId);
+  const markError = async (msg) => await db.prepare("UPDATE dev_test_runs SET status='error', error=?, updated_at=datetime('now') WHERE id=?").run(msg, runId);
 
   try {
     const headers = { 'Content-Type': 'application/json' };
@@ -890,22 +888,22 @@ router.post('/jobs/:id/dev/run', uploadCv.single('cv'), async (req, res) => {
     });
     if (!resp.ok) throw new Error(`trigger responded ${resp.status}`);
   } catch (err) {
-    markError(`failed to trigger workflow: ${err.message}`);
-    return res.status(502).json({ error: `could not start the dev run: ${err.message}`, run: presentDevRun(db.prepare('SELECT * FROM dev_test_runs WHERE id = ?').get(runId)) });
+    await markError(`failed to trigger workflow: ${err.message}`);
+    return res.status(502).json({ error: `could not start the dev run: ${err.message}`, run: await presentDevRun(await db.prepare('SELECT * FROM dev_test_runs WHERE id = ?').get(runId)) });
   }
 
-  res.status(201).json(presentDevRun(db.prepare('SELECT * FROM dev_test_runs WHERE id = ?').get(runId)));
+  res.status(201).json(await presentDevRun(await db.prepare('SELECT * FROM dev_test_runs WHERE id = ?').get(runId)));
 });
 
 // Workflow -> dashboard: store the scored result for a dev run. Guarded by the
 // internal key (same credential the workflow already uses for /evaluation-config).
-router.post('/jobs/:id/dev/result', requireInternalKey, (req, res) => {
+router.post('/jobs/:id/dev/result', requireInternalKey, async (req, res) => {
   const { run_id, candidate_name, score, rationale, parameter_breakdown, parameter_reasoning } = req.body;
   if (!run_id) return res.status(400).json({ error: 'run_id is required' });
-  const run = db.prepare('SELECT * FROM dev_test_runs WHERE id = ? AND job_id = ?').get(run_id, req.params.id);
+  const run = await db.prepare('SELECT * FROM dev_test_runs WHERE id = ? AND job_id = ?').get(run_id, req.params.id);
   if (!run) return res.status(404).json({ error: 'dev run not found for this job' });
 
-  db.prepare(`
+  await db.prepare(`
     UPDATE dev_test_runs SET
       status = 'done',
       candidate_name = COALESCE(?, candidate_name),
@@ -925,25 +923,25 @@ router.post('/jobs/:id/dev/result', requireInternalKey, (req, res) => {
     run_id,
   );
 
-  res.json({ ok: true, run: presentDevRun(db.prepare('SELECT * FROM dev_test_runs WHERE id = ?').get(run_id)) });
+  res.json({ ok: true, run: await presentDevRun(await db.prepare('SELECT * FROM dev_test_runs WHERE id = ?').get(run_id)) });
 });
 
 // UI -> dashboard: list recent dev runs for a folder (most recent first).
-router.get('/jobs/:id/dev/results', (req, res) => {
-  const rows = db.prepare('SELECT * FROM dev_test_runs WHERE job_id = ? ORDER BY created_at DESC LIMIT 50').all(req.params.id);
-  res.json(rows.map(presentDevRun));
+router.get('/jobs/:id/dev/results', async (req, res) => {
+  const rows = await db.prepare('SELECT * FROM dev_test_runs WHERE job_id = ? ORDER BY created_at DESC LIMIT 50').all(req.params.id);
+  res.json(await Promise.all(rows.map(presentDevRun)));
 });
 
 // UI -> dashboard: fetch a single dev run (for polling while it's 'pending').
-router.get('/jobs/:id/dev/results/:runId', (req, res) => {
-  const run = db.prepare('SELECT * FROM dev_test_runs WHERE id = ? AND job_id = ?').get(req.params.runId, req.params.id);
+router.get('/jobs/:id/dev/results/:runId', async (req, res) => {
+  const run = await db.prepare('SELECT * FROM dev_test_runs WHERE id = ? AND job_id = ?').get(req.params.runId, req.params.id);
   if (!run) return res.status(404).json({ error: 'dev run not found' });
-  res.json(presentDevRun(run));
+  res.json(await presentDevRun(run));
 });
 
 // UI -> dashboard: delete a dev run (clean up the sandbox).
-router.delete('/jobs/:id/dev/results/:runId', (req, res) => {
-  db.prepare('DELETE FROM dev_test_runs WHERE id = ? AND job_id = ?').run(req.params.runId, req.params.id);
+router.delete('/jobs/:id/dev/results/:runId', async (req, res) => {
+  await db.prepare('DELETE FROM dev_test_runs WHERE id = ? AND job_id = ?').run(req.params.runId, req.params.id);
   res.status(204).end();
 });
 
@@ -952,24 +950,24 @@ router.delete('/jobs/:id/dev/results/:runId', (req, res) => {
 // the Ashby stage or archives anything — the Happy Robot workflow does that
 // based on the `passed` flag returned by POST /interview/results.
 
-function localJobByAshbyJobId(ashbyJobId) {
+async function localJobByAshbyJobId(ashbyJobId) {
   if (!ashbyJobId) return null;
-  return db.prepare('SELECT * FROM jobs WHERE ashby_job_id = ?').get(ashbyJobId);
+  return await db.prepare('SELECT * FROM jobs WHERE ashby_job_id = ?').get(ashbyJobId);
 }
 
 // Resolve the local job FOLDER for an Ashby application object. Folders are now
 // one-per-role (location-agnostic): try the legacy real-UUID anchor first, then
 // the canonical role key so an application from ANY country lands on its role folder.
-function localJobForApp(app) {
+async function localJobForApp(app) {
   const ashbyJobId = (app && app.job && app.job.id) || (app && app.jobId) || null;
-  let job = localJobByAshbyJobId(ashbyJobId);
+  let job = await localJobByAshbyJobId(ashbyJobId);
   if (!job) {
     const rawTitle = (app && app.job && app.job.title) || (app && app.jobTitle) || null;
     if (rawTitle) {
       const { canonicalTitle, roleKey } = canonicalizeRole(rawTitle);
       job =
-        db.prepare('SELECT * FROM jobs WHERE ashby_job_id = ?').get(roleKey) ||
-        db.prepare('SELECT * FROM jobs WHERE LOWER(name) = LOWER(?)').get(canonicalTitle);
+        (await db.prepare('SELECT * FROM jobs WHERE ashby_job_id = ?').get(roleKey)) ||
+        (await db.prepare('SELECT * FROM jobs WHERE LOWER(name) = LOWER(?)').get(canonicalTitle));
     }
   }
   return job || null;
@@ -979,21 +977,21 @@ function localJobForApp(app) {
 // cached from a previous interview interaction, then a live Ashby lookup.
 async function resolveJobIdForApplication(applicationId, hintedJobId) {
   if (hintedJobId) {
-    const job = db.prepare('SELECT id FROM jobs WHERE id = ?').get(hintedJobId);
+    const job = await db.prepare('SELECT id FROM jobs WHERE id = ?').get(hintedJobId);
     if (job) return job.id;
   }
-  const state = db.prepare('SELECT job_id FROM interview_state WHERE application_id = ?').get(applicationId);
+  const state = await db.prepare('SELECT job_id FROM interview_state WHERE application_id = ?').get(applicationId);
   if (state && state.job_id) return state.job_id;
   const info = await ashby.getApplicationInfo(applicationId);
   const app = (info && info.results) || info || {};
-  const job = localJobForApp(app);
+  const job = await localJobForApp(app);
   return job ? job.id : null;
 }
 
 // Upsert interview state. stage_entered_at is only stamped on first insert (our
 // fallback for Ashby's native stage-entry time); job_id is backfilled if empty.
-function touchInterviewState(applicationId, jobId) {
-  db.prepare(`
+async function touchInterviewState(applicationId, jobId) {
+  await db.prepare(`
     INSERT INTO interview_state (application_id, job_id, stage_entered_at)
     VALUES (?, ?, datetime('now'))
     ON CONFLICT(application_id) DO UPDATE SET
@@ -1004,11 +1002,11 @@ function touchInterviewState(applicationId, jobId) {
 // Deterministic weighted score over the questions that were actually asked.
 // answers: [{ question_id, answer: true | false | null }]. null = not asked.
 // A question passes when its answer matches its expected_answer (see scoring.js).
-function computeInterviewScore(answers) {
+async function computeInterviewScore(answers) {
   const questionMap = {};
   for (const a of answers) {
     if (!(a.question_id in questionMap)) {
-      const q = db.prepare('SELECT weight, expected_answer FROM killer_questions WHERE id = ?').get(a.question_id);
+      const q = await db.prepare('SELECT weight, expected_answer FROM killer_questions WHERE id = ?').get(a.question_id);
       if (q) questionMap[a.question_id] = { weight: q.weight, expected_answer: q.expected_answer };
     }
   }
@@ -1023,9 +1021,9 @@ router.get('/interview/questions', requireInternalKey, async (req, res) => {
   try {
     const jobId = await resolveJobIdForApplication(applicationId, (req.query.jobId || '').trim() || null);
     if (!jobId) return res.status(404).json({ error: 'could not resolve a job for this application' });
-    touchInterviewState(applicationId, jobId);
-    const state = db.prepare('SELECT stage_entered_at FROM interview_state WHERE application_id = ?').get(applicationId);
-    const questions = db.prepare('SELECT id, question AS text, weight FROM killer_questions WHERE job_id = ? ORDER BY created_at').all(jobId);
+    await touchInterviewState(applicationId, jobId);
+    const state = await db.prepare('SELECT stage_entered_at FROM interview_state WHERE application_id = ?').get(applicationId);
+    const questions = await db.prepare('SELECT id, question AS text, weight FROM killer_questions WHERE job_id = ? ORDER BY created_at').all(jobId);
     res.json({ applicationId, jobId, stageEnteredAt: state ? state.stage_entered_at : null, questions });
   } catch (err) {
     res.status(502).json({ error: `failed to resolve questions: ${err.message}` });
@@ -1037,14 +1035,14 @@ router.get('/interview/questions', requireInternalKey, async (req, res) => {
 // the configured limit and whether it's been reached, so the Happy Robot
 // workflow can archive "unreachable" applications from settings instead of a
 // hardcoded number.
-router.post('/interview/attempts/:applicationId/increment', requireInternalKey, (req, res) => {
-  const row = db.prepare(`
+router.post('/interview/attempts/:applicationId/increment', requireInternalKey, async (req, res) => {
+  const row = await db.prepare(`
     INSERT INTO interview_state (application_id, attempts, stage_entered_at)
     VALUES (?, 1, datetime('now'))
     ON CONFLICT(application_id) DO UPDATE SET attempts = interview_state.attempts + 1
     RETURNING attempts
   `).get(req.params.applicationId);
-  const maxAttempts = getMaxCallAttempts();
+  const maxAttempts = await getMaxCallAttempts();
   res.json({ attempts: row.attempts, maxAttempts, limitReached: row.attempts >= maxAttempts });
 });
 
@@ -1056,26 +1054,26 @@ router.post('/interview/results', requireInternalKey, async (req, res) => {
   if (!applicationId) return res.status(400).json({ error: 'applicationId is required' });
   if (!Array.isArray(answers)) return res.status(400).json({ error: 'answers must be an array' });
 
-  const { score, asked } = computeInterviewScore(answers);
-  const passed = score >= getPassThreshold();
+  const { score, asked } = await computeInterviewScore(answers);
+  const passed = score >= await getPassThreshold();
 
   // Derive the job (for coverage total) from the answered questions, falling
   // back to cached interview state.
   let jobId = null;
   for (const a of answers) {
-    const q = db.prepare('SELECT job_id FROM killer_questions WHERE id = ?').get(a.question_id);
+    const q = await db.prepare('SELECT job_id FROM killer_questions WHERE id = ?').get(a.question_id);
     if (q) { jobId = q.job_id; break; }
   }
   if (!jobId) {
-    const state = db.prepare('SELECT job_id FROM interview_state WHERE application_id = ?').get(applicationId);
+    const state = await db.prepare('SELECT job_id FROM interview_state WHERE application_id = ?').get(applicationId);
     if (state) jobId = state.job_id;
   }
   const coverageTotal = jobId
-    ? db.prepare('SELECT COUNT(*) AS n FROM killer_questions WHERE job_id = ?').get(jobId).n
+    ? (await db.prepare('SELECT COUNT(*) AS n FROM killer_questions WHERE job_id = ?').get(jobId)).n
     : answers.length;
 
   const id = uuid();
-  db.prepare(`
+  await db.prepare(`
     INSERT INTO interview_results
       (id, application_id, job_id, call_connected, answers, callback_requested, call_notes, score, passed, coverage_asked, coverage_total, synced_to_ashby)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
@@ -1102,11 +1100,11 @@ router.post('/interview/results', requireInternalKey, async (req, res) => {
       if (coverageFieldId) {
         await ashby.setCustomFieldScore({ objectId: applicationId, objectType, fieldId: coverageFieldId, value: `${asked} of ${coverageTotal}` });
       }
-      db.prepare('UPDATE interview_results SET synced_to_ashby = 1 WHERE id = ?').run(id);
+      await db.prepare('UPDATE interview_results SET synced_to_ashby = 1 WHERE id = ?').run(id);
       syncResult = { synced: true };
     }
   } catch (err) {
-    db.prepare('UPDATE interview_results SET sync_error = ? WHERE id = ?').run(err.message, id);
+    await db.prepare('UPDATE interview_results SET sync_error = ? WHERE id = ?').run(err.message, id);
     syncResult = { synced: false, error: err.message };
   }
 
@@ -1135,7 +1133,7 @@ router.get('/interview/lookup', requireInternalKey, async (req, res) => {
 
   const agentStageId = process.env.ASHBY_AGENT_INTERVIEW_STAGE_ID || null;
   const agentStageName = (process.env.ASHBY_AGENT_INTERVIEW_STAGE_NAME || 'Agent Interview').toLowerCase();
-  const recordingEnabled = getRecordingEnabled();
+  const recordingEnabled = await getRecordingEnabled();
 
   try {
     const candidates = await ashby.searchCandidatesByPhone(phone);
@@ -1151,9 +1149,9 @@ router.get('/interview/lookup', requireInternalKey, async (req, res) => {
         const active = app.status ? !['Archived', 'Hired'].includes(app.status) : true;
         if (!inAgentStage || !active) continue;
 
-        const localJob = localJobForApp(app);
+        const localJob = await localJobForApp(app);
         const questions = localJob
-          ? db.prepare('SELECT id, question AS text, weight FROM killer_questions WHERE job_id = ? ORDER BY created_at').all(localJob.id)
+          ? await db.prepare('SELECT id, question AS text, weight FROM killer_questions WHERE job_id = ? ORDER BY created_at').all(localJob.id)
           : [];
         return res.json({
           matched: true,
@@ -1182,14 +1180,14 @@ function extractRationale(breakdown) {
 }
 
 // GET /history — list of applications that have any evaluation, most recent first.
-router.get('/history', (req, res) => {
-  const prescreens = db.prepare(`
+router.get('/history', async (req, res) => {
+  const prescreens = await db.prepare(`
     SELECT ashby_application_id AS application_id, job_id, score, status, created_at
     FROM score_log
     WHERE ashby_application_id IS NOT NULL
     ORDER BY created_at DESC LIMIT 500
   `).all();
-  const interviews = db.prepare(`
+  const interviews = await db.prepare(`
     SELECT application_id, job_id, score, passed, coverage_asked, coverage_total, created_at
     FROM interview_results
     ORDER BY created_at DESC LIMIT 500
@@ -1220,7 +1218,7 @@ router.get('/history', (req, res) => {
     if (!e.last_activity || iv.created_at > e.last_activity) e.last_activity = iv.created_at;
   }
 
-  const jobName = Object.fromEntries(db.prepare('SELECT id, name FROM jobs').all().map((j) => [j.id, j.name]));
+  const jobName = Object.fromEntries((await db.prepare('SELECT id, name FROM jobs').all()).map((j) => [j.id, j.name]));
   const list = [...byApp.values()]
     .map((e) => ({ ...e, job_name: e.job_id ? (jobName[e.job_id] || null) : null }))
     .sort((a, b) => (b.last_activity || '').localeCompare(a.last_activity || ''));
@@ -1228,22 +1226,22 @@ router.get('/history', (req, res) => {
 });
 
 // GET /applications/:applicationId/history — full detail for one application.
-router.get('/applications/:applicationId/history', (req, res) => {
+router.get('/applications/:applicationId/history', async (req, res) => {
   const applicationId = req.params.applicationId;
-  const prescreen = db.prepare(`
+  const prescreen = await db.prepare(`
     SELECT job_id, ashby_candidate_id, score, status, breakdown, created_at
     FROM score_log WHERE ashby_application_id = ? ORDER BY created_at DESC LIMIT 1
   `).get(applicationId);
-  const interview = db.prepare(`
+  const interview = await db.prepare(`
     SELECT job_id, call_connected, answers, callback_requested, call_notes, score, passed, coverage_asked, coverage_total, created_at
     FROM interview_results WHERE application_id = ? ORDER BY created_at DESC LIMIT 1
   `).get(applicationId);
-  const stateRow = db.prepare('SELECT attempts, stage_entered_at FROM interview_state WHERE application_id = ?').get(applicationId);
+  const stateRow = await db.prepare('SELECT attempts, stage_entered_at FROM interview_state WHERE application_id = ?').get(applicationId);
 
   const jobId = (interview && interview.job_id) || (prescreen && prescreen.job_id) || null;
-  const job = jobId ? db.prepare('SELECT id, name FROM jobs WHERE id = ?').get(jobId) : null;
+  const job = jobId ? await db.prepare('SELECT id, name FROM jobs WHERE id = ?').get(jobId) : null;
   const questions = jobId
-    ? db.prepare('SELECT id, question AS text, weight, expected_answer FROM killer_questions WHERE job_id = ? ORDER BY created_at').all(jobId)
+    ? await db.prepare('SELECT id, question AS text, weight, expected_answer FROM killer_questions WHERE job_id = ? ORDER BY created_at').all(jobId)
     : [];
 
   let answers = [];
@@ -1300,22 +1298,22 @@ router.get('/applications/:applicationId/history', (req, res) => {
 // prescreen results (score_log) and Agent Interview results (interview_results /
 // interview_state). Later Ashby stages (Recruiter Interview / Hired / Archived)
 // are not synced back into this DB, so they're not part of the funnel.
-router.get('/analytics/funnel', (req, res) => {
+router.get('/analytics/funnel', async (req, res) => {
   const jobFilter = (req.query.job || '').trim() || null;
-  const threshold = getPassThreshold();
+  const threshold = await getPassThreshold();
 
   // Latest prescreen per application.
-  const prescreens = db.prepare(`
+  const prescreens = await db.prepare(`
     SELECT ashby_application_id AS app, job_id, score, created_at
     FROM score_log WHERE ashby_application_id IS NOT NULL
     ORDER BY created_at DESC
   `).all();
   // Latest interview per application.
-  const interviews = db.prepare(`
+  const interviews = await db.prepare(`
     SELECT application_id AS app, job_id, score, passed, created_at
     FROM interview_results ORDER BY created_at DESC
   `).all();
-  const states = db.prepare('SELECT application_id AS app, job_id, attempts FROM interview_state').all();
+  const states = await db.prepare('SELECT application_id AS app, job_id, attempts FROM interview_state').all();
 
   // Build one aggregate row per application (latest values win).
   const apps = new Map();
@@ -1356,7 +1354,7 @@ router.get('/analytics/funnel', (req, res) => {
     };
   }
 
-  const jobName = Object.fromEntries(db.prepare('SELECT id, name FROM jobs').all().map((j) => [j.id, j.name]));
+  const jobName = Object.fromEntries((await db.prepare('SELECT id, name FROM jobs').all()).map((j) => [j.id, j.name]));
   const main = funnelFor(rows);
 
   // Per-job pass-rate breakdown (only for the all-jobs view).
@@ -1408,61 +1406,61 @@ function isValidUrl(s) {
 }
 
 // ---------- Recruiter folders (one per job title) ----------
-router.get('/recruiter-jobs', (req, res) => {
-  const rows = db.prepare('SELECT * FROM recruiter_jobs ORDER BY created_at DESC').all();
+router.get('/recruiter-jobs', async (req, res) => {
+  const rows = await db.prepare('SELECT * FROM recruiter_jobs ORDER BY created_at DESC').all();
   res.json(rows);
 });
 
-router.post('/recruiter-jobs', (req, res) => {
+router.post('/recruiter-jobs', async (req, res) => {
   const { name } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
   const id = uuid();
-  db.prepare('INSERT INTO recruiter_jobs (id, name) VALUES (?, ?)').run(id, name.trim());
-  res.status(201).json(db.prepare('SELECT * FROM recruiter_jobs WHERE id = ?').get(id));
+  await db.prepare('INSERT INTO recruiter_jobs (id, name) VALUES (?, ?)').run(id, name.trim());
+  res.status(201).json(await db.prepare('SELECT * FROM recruiter_jobs WHERE id = ?').get(id));
 });
 
-router.put('/recruiter-jobs/:id', (req, res) => {
+router.put('/recruiter-jobs/:id', async (req, res) => {
   const { name } = req.body;
-  const job = db.prepare('SELECT * FROM recruiter_jobs WHERE id = ?').get(req.params.id);
+  const job = await db.prepare('SELECT * FROM recruiter_jobs WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ error: 'recruiter job not found' });
   if (name !== undefined && (!name || !name.trim())) return res.status(400).json({ error: 'name cannot be empty' });
-  db.prepare('UPDATE recruiter_jobs SET name = COALESCE(?, name) WHERE id = ?')
+  await db.prepare('UPDATE recruiter_jobs SET name = COALESCE(?, name) WHERE id = ?')
     .run(name ? name.trim() : null, req.params.id);
-  res.json(db.prepare('SELECT * FROM recruiter_jobs WHERE id = ?').get(req.params.id));
+  res.json(await db.prepare('SELECT * FROM recruiter_jobs WHERE id = ?').get(req.params.id));
 });
 
-router.delete('/recruiter-jobs/:id', (req, res) => {
-  db.prepare('DELETE FROM recruiter_jobs WHERE id = ?').run(req.params.id);
+router.delete('/recruiter-jobs/:id', async (req, res) => {
+  await db.prepare('DELETE FROM recruiter_jobs WHERE id = ?').run(req.params.id);
   res.status(204).end();
 });
 
 // ---------- Recruiter entries (per folder) ----------
-router.get('/recruiter-jobs/:jobId/recruiters', (req, res) => {
-  const rows = db.prepare('SELECT * FROM recruiters WHERE recruiter_job_id = ? ORDER BY created_at').all(req.params.jobId);
+router.get('/recruiter-jobs/:jobId/recruiters', async (req, res) => {
+  const rows = await db.prepare('SELECT * FROM recruiters WHERE recruiter_job_id = ? ORDER BY created_at').all(req.params.jobId);
   res.json(rows);
 });
 
-router.post('/recruiter-jobs/:jobId/recruiters', (req, res) => {
-  const job = db.prepare('SELECT * FROM recruiter_jobs WHERE id = ?').get(req.params.jobId);
+router.post('/recruiter-jobs/:jobId/recruiters', async (req, res) => {
+  const job = await db.prepare('SELECT * FROM recruiter_jobs WHERE id = ?').get(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'recruiter job not found' });
   const { name, email, calendar_link, notes } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
   if (!isValidEmail(email)) return res.status(400).json({ error: 'a valid email is required' });
   if (!isValidUrl(calendar_link)) return res.status(400).json({ error: 'calendar_link must be a valid URL' });
   const id = uuid();
-  db.prepare('INSERT INTO recruiters (id, recruiter_job_id, name, email, calendar_link, notes) VALUES (?, ?, ?, ?, ?, ?)')
+  await db.prepare('INSERT INTO recruiters (id, recruiter_job_id, name, email, calendar_link, notes) VALUES (?, ?, ?, ?, ?, ?)')
     .run(id, req.params.jobId, name.trim(), email.trim(), calendar_link.trim(), (notes || '').trim() || null);
-  res.status(201).json(db.prepare('SELECT * FROM recruiters WHERE id = ?').get(id));
+  res.status(201).json(await db.prepare('SELECT * FROM recruiters WHERE id = ?').get(id));
 });
 
-router.put('/recruiters/:id', (req, res) => {
-  const existing = db.prepare('SELECT * FROM recruiters WHERE id = ?').get(req.params.id);
+router.put('/recruiters/:id', async (req, res) => {
+  const existing = await db.prepare('SELECT * FROM recruiters WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'recruiter not found' });
   const { name, email, calendar_link, notes } = req.body;
   if (name !== undefined && (!name || !name.trim())) return res.status(400).json({ error: 'name cannot be empty' });
   if (email !== undefined && !isValidEmail(email)) return res.status(400).json({ error: 'a valid email is required' });
   if (calendar_link !== undefined && !isValidUrl(calendar_link)) return res.status(400).json({ error: 'calendar_link must be a valid URL' });
-  db.prepare(`
+  await db.prepare(`
     UPDATE recruiters SET
       name = COALESCE(?, name),
       email = COALESCE(?, email),
@@ -1476,11 +1474,11 @@ router.put('/recruiters/:id', (req, res) => {
     notes !== undefined ? ((notes || '').trim() || null) : existing.notes,
     req.params.id,
   );
-  res.json(db.prepare('SELECT * FROM recruiters WHERE id = ?').get(req.params.id));
+  res.json(await db.prepare('SELECT * FROM recruiters WHERE id = ?').get(req.params.id));
 });
 
-router.delete('/recruiters/:id', (req, res) => {
-  db.prepare('DELETE FROM recruiters WHERE id = ?').run(req.params.id);
+router.delete('/recruiters/:id', async (req, res) => {
+  await db.prepare('DELETE FROM recruiters WHERE id = ?').run(req.params.id);
   res.status(204).end();
 });
 
@@ -1493,12 +1491,12 @@ router.delete('/recruiters/:id', (req, res) => {
 //   found: { "found": true, "recruiterName": string, "recruiterEmail": string, "calendarLink": string }
 //   none:  { "found": false }
 // 400 { error } only when the `job` query parameter is missing/empty.
-router.get('/recruiters', requireInternalKey, (req, res) => {
+router.get('/recruiters', requireInternalKey, async (req, res) => {
   const job = (req.query.job || '').trim();
   if (!job) return res.status(400).json({ error: 'job query parameter is required' });
 
-  const folder = db.prepare('SELECT id FROM recruiter_jobs WHERE lower(trim(name)) = lower(?)').get(job);
-  const recruiter = folder && db.prepare(
+  const folder = await db.prepare('SELECT id FROM recruiter_jobs WHERE lower(trim(name)) = lower(?)').get(job);
+  const recruiter = folder && await db.prepare(
     'SELECT name, email, calendar_link FROM recruiters WHERE recruiter_job_id = ? ORDER BY created_at ASC LIMIT 1'
   ).get(folder.id);
   if (!recruiter) return res.json({ found: false });
@@ -1563,11 +1561,11 @@ const SECRETS = [
 
 // GET /settings — current values + integration status (no live network calls,
 // no raw secrets: each secret is reported as configured + masked only).
-router.get('/settings', (req, res) => {
+router.get('/settings', async (req, res) => {
   res.json({
-    pass_threshold: getPassThreshold(),
-    max_call_attempts: getMaxCallAttempts(),
-    call_recording_enabled: getRecordingEnabled(),
+    pass_threshold: await getPassThreshold(),
+    max_call_attempts: await getMaxCallAttempts(),
+    call_recording_enabled: await getRecordingEnabled(),
     ashby: {
       configured: !!process.env.ASHBY_API_KEY,
       object_type: process.env.ASHBY_INTERVIEW_OBJECT_TYPE || 'Application',
@@ -1607,7 +1605,7 @@ router.get('/settings/ashby-status', async (req, res) => {
 });
 
 // PUT /settings — update editable settings; validates each field.
-router.put('/settings', (req, res) => {
+router.put('/settings', async (req, res) => {
   const { pass_threshold, max_call_attempts, call_recording_enabled } = req.body || {};
 
   if (pass_threshold !== undefined) {
@@ -1615,23 +1613,23 @@ router.put('/settings', (req, res) => {
     if (!Number.isFinite(n) || n < 0 || n > 10) {
       return res.status(400).json({ error: 'pass_threshold must be a number between 0 and 10' });
     }
-    setSetting('pass_threshold', n);
+    await setSetting('pass_threshold', n);
   }
   if (max_call_attempts !== undefined) {
     const n = Number(max_call_attempts);
     if (!Number.isInteger(n) || n < 1) {
       return res.status(400).json({ error: 'max_call_attempts must be an integer of at least 1' });
     }
-    setSetting('max_call_attempts', n);
+    await setSetting('max_call_attempts', n);
   }
   if (call_recording_enabled !== undefined) {
-    setSetting('call_recording_enabled', call_recording_enabled ? '1' : '0');
+    await setSetting('call_recording_enabled', call_recording_enabled ? '1' : '0');
   }
 
   res.json({
-    pass_threshold: getPassThreshold(),
-    max_call_attempts: getMaxCallAttempts(),
-    call_recording_enabled: getRecordingEnabled(),
+    pass_threshold: await getPassThreshold(),
+    max_call_attempts: await getMaxCallAttempts(),
+    call_recording_enabled: await getRecordingEnabled(),
   });
 });
 
