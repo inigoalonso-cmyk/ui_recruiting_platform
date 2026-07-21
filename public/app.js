@@ -314,7 +314,7 @@ async function renderJobView(jobId) {
       </div>
       <div class="folder-toolbar">
         ${modeDropdownHtml(mode)}
-        <button type="button" class="btn-secondary testing-btn" id="open-testing" title="Open the testing sandbox">🧪 Testing</button>
+        ${mode === 'development' ? '<button type="button" class="btn-secondary testing-btn" id="open-testing" title="Open the testing sandbox">🧪 Testing</button>' : ''}
       </div>
     </div>
     ${modeBannerHtml(mode)}
@@ -327,7 +327,9 @@ async function renderJobView(jobId) {
   `;
 
   wireModeDropdown(contentEl, jobId);
-  document.getElementById('open-testing').addEventListener('click', () => openTesting(jobId));
+  // The Testing sandbox is only reachable while the folder is in Development.
+  const openTestingBtn = document.getElementById('open-testing');
+  if (openTestingBtn) openTestingBtn.addEventListener('click', () => openTesting(jobId));
 
   document.getElementById('ashby-job-id').addEventListener('change', async (e) => {
     try {
