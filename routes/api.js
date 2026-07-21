@@ -102,9 +102,31 @@ function requireSyncKey(req, res, next) {
 }
 
 // ---------- JOBS (folders) ----------
+// Optional ?mode= filter (normal | development | production) so the prescreening
+// cron can fetch only the roles it should score in one call, e.g.
+// GET /api/jobs?mode=production. Without the param, returns every folder.
 router.get('/jobs', (req, res) => {
+  const { mode } = req.query;
+  if (mode !== undefined) {
+    if (!JOB_MODES.includes(mode)) {
+      return res.status(400).json({ error: `mode must be one of: ${JOB_MODES.join(', ')}` });
+    }
+    const jobs = db.prepare('SELECT * FROM jobs WHERE mode = ? ORDER BY created_at DESC').all(mode);
+    return res.json(jobs);
+  }
   const jobs = db.prepare('SELECT * FROM jobs ORDER BY created_at DESC').all();
   res.json(jobs);
+});
+
+// Roles the prescreening cron should score right now, returned as a referenceable
+// OBJECT (a bare JSON array body is not cleanly addressable from the workflow's
+// HTTP node — only its first element's fields get exposed). The workflow reads
+// job_ids to keep only candidates whose role is in production before the loop.
+// GET /api/jobs/production -> { job_ids: [...], count: N }
+router.get('/jobs/production', (req, res) => {
+  const rows = db.prepare("SELECT id FROM jobs WHERE mode = 'production' ORDER BY created_at DESC").all();
+  const jobIds = rows.map((r) => r.id);
+  res.json({ job_ids: jobIds, count: jobIds.length });
 });
 
 router.post('/jobs', (req, res) => {
