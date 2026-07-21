@@ -748,9 +748,11 @@ router.get('/jobs/:jobId/evaluation-config', requireInternalKey, (req, res) => {
 
   res.json({
     job: { id: job.id, name: job.name, ashby_job_id: job.ashby_job_id, mode: job.mode },
-    // Top-level too so the Prescreening cron guard can read {{...mode}} directly:
-    // it must only score folders whose mode === 'production' and skip the rest.
+    // Top-level too so the Prescreening workflow can read these directly. It must
+    // only score folders whose mode === 'production'; a gate node can branch on
+    // is_production (true/false) to skip the rest.
     mode: job.mode,
+    is_production: job.mode === 'production',
     weight_total: weightTotal,
     general_parameters: generalParams.map(withEffective),
     job_parameters: jobParams.map(withEffective),
