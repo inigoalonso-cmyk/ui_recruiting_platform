@@ -1630,3 +1630,92 @@ input:focus, select:focus, textarea:focus { box-shadow: 0 0 0 3px var(--accent-r
   background: var(--accent); border-radius: 10px; box-shadow: var(--shadow-sm);
 }
 .add-row-form button:hover, .add-killer-form button:hover, .add-fact-form button:hover { background: var(--accent-hover); }
+
+/* --- Folder filter / search --- */
+.folder-filter {
+  width: 100%;
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 12.5px;
+  padding: 8px 11px 8px 32px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24' fill='none' stroke='%2398A0AE' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='m21 21-4.3-4.3'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: 10px center;
+  background-size: 14px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.folder-filter::placeholder { color: var(--text-faint); }
+.folder-filter:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+
+/* --- Polished empty states --- */
+.empty-state {
+  padding: 44px 24px;
+  text-align: center;
+  color: var(--text-faint);
+  font-size: 13.5px;
+  line-height: 1.5;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+.empty-state::before {
+  content: "";
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--surface-alt) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%2398A0AE' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M22 12h-6l-2 3h-4l-2-3H2'/%3E%3Cpath d='M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z'/%3E%3C/svg%3E") no-repeat center;
+  background-size: 20px;
+}
+
+/* --- Toast --- */
+.toast { border-radius: var(--radius); box-shadow: var(--shadow-lg); font-weight: 500; letter-spacing: -0.01em; }
+
+/* ============================================================
+   DARK MODE
+   ============================================================ */
+html[data-theme="dark"] {
+  --bg: #0B0F1A;
+  --surface: #131A2A;
+  --surface-alt: #1B2334;
+  --surface-sunken: #0F1522;
+  --line: #232C40;
+  --line-strong: #33405A;
+  --text: #E7ECF4;
+  --text-muted: #9AA4B8;
+  --text-faint: #697388;
+  --accent: #7C83FF;
+  --accent-hover: #939AFF;
+  --accent-soft: #1E2440;
+  --accent-ring: rgba(124, 131, 255, 0.32);
+  --dark: #1B2334;
+  --pass-bg: #10331F; --pass-fg: #4ADE80;
+  --fail-bg: #3A1620; --fail-fg: #FB7185;
+  --neutral-bg: #1B2334; --neutral-fg: #9AA4B8;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 6px 16px -4px rgba(0, 0, 0, 0.5), 0 2px 6px -2px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 18px 40px -12px rgba(0, 0, 0, 0.62);
+}
+html[data-theme="dark"] body { background: var(--bg); }
+html[data-theme="dark"] .icon-rail { background: linear-gradient(180deg, #0F1522 0%, #0B0F1A 100%); }
+html[data-theme="dark"] .brand-mark { background: #1B2334; }
+html[data-theme="dark"] .folder-list::-webkit-scrollbar-thumb,
+html[data-theme="dark"] .main::-webkit-scrollbar-thumb { background: #2A3550; background-clip: padding-box; }
+
+/* Theme toggle icon swap */
+.icon-btn .ico-sun, .icon-btn .ico-moon { width: 20px; height: 20px; }
+.ico-sun { display: none; }
+html[data-theme="dark"] .ico-moon { display: none; }
+html[data-theme="dark"] .ico-sun { display: block; }
+
+/* Smooth theme transition */
+html, body, .rail, .icon-rail, .main, .card, .killer-list, .folder-tab, .rail-nav, .folder-filter, input, select, textarea {
+  transition: background-color .2s ease, border-color .2s ease, color .2s ease;
+}
+
+/* Subtle content fade-in */
+#content { animation: contentIn .24s ease both; }
+@keyframes contentIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }

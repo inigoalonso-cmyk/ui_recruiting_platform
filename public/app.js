@@ -31,6 +31,44 @@ const recruiterFolderListEl = document.getElementById('recruiter-folder-list');
 const jobinfoFolderListEl = document.getElementById('jobinfo-folder-list');
 const toastEl = document.getElementById('toast');
 
+// ---- Folder filter: live-hide non-matching rows in a folder list ----
+function wireFolderFilter(inputId, listEl) {
+  const input = document.getElementById(inputId);
+  if (!input || !listEl) return;
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    listEl.querySelectorAll('.folder-row').forEach(row => {
+      row.style.display = (!q || row.textContent.toLowerCase().includes(q)) ? '' : 'none';
+    });
+    listEl.querySelectorAll('.folder-divider').forEach(d => { d.style.display = q ? 'none' : ''; });
+  });
+}
+wireFolderFilter('folder-filter', folderListEl);
+wireFolderFilter('recruiter-folder-filter', recruiterFolderListEl);
+wireFolderFilter('jobinfo-folder-filter', jobinfoFolderListEl);
+
+// ---- Theme toggle (persisted; initial theme applied in <head>) ----
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (dark) document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', 'dark');
+  try { localStorage.setItem('hr-theme', dark ? 'light' : 'dark'); } catch (e) {}
+});
+
+// ---- Keyboard: "/" or ⌘/Ctrl+K focuses the visible folder filter ----
+document.addEventListener('keydown', (e) => {
+  const tag = (e.target.tagName || '').toLowerCase();
+  const typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
+  const slash = e.key === '/' && !typing;
+  const cmdK = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k';
+  if (slash || cmdK) {
+    const visible = ['folder-filter', 'jobinfo-folder-filter', 'recruiter-folder-filter']
+      .map(id => document.getElementById(id))
+      .find(el => el && el.offsetParent !== null);
+    if (visible) { e.preventDefault(); visible.focus(); visible.select(); }
+  }
+});
+
 function showToast(msg, isError = false) {
   toastEl.textContent = msg;
   toastEl.className = 'toast show' + (isError ? ' error' : '');
@@ -312,7 +350,6 @@ function renderParamsSection(container, params, scopeId) {
       <h2>Evaluation parameters</h2>
       <span class="weight-total">relative weights · auto-normalized</span>
     </div>
-    <div class="section-hint">Add each criterion and how important it is — any positive number. Weights don't need to add up to anything; the score uses each one's share of the total, shown as % below.</div>
     <div class="card">
       <div id="param-rows"></div>
       <form class="add-row-form" id="add-param-form">
@@ -410,7 +447,6 @@ function renderKillerSection(container, killers, jobId) {
     <div class="section-heading">
       <h2>Killer questions</h2>
     </div>
-    <div class="section-hint">Questions the interview agent will use to quickly rule out an already-qualified candidate. “Expects” is the answer that counts as a pass — set it to False when a “no” is the good answer.</div>
     <div class="killer-list" id="killer-list"></div>
     <form class="add-killer-form" id="add-killer-form">
       <textarea name="question" placeholder="Write the killer question…" required></textarea>
