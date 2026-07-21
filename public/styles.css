@@ -1864,3 +1864,129 @@ html[data-theme="dark"] {
 .dev-param-line.bullet { padding-left: 15px; position: relative; }
 .dev-param-line.bullet::before { content: "•"; position: absolute; left: 3px; color: var(--text-faint); }
 .dev-param-line strong { font-weight: 600; }
+
+/* Colour the big score number by pass/fail (Testing result cards). */
+.dev-score.pass { color: var(--pass-fg); }
+.dev-score.fail { color: var(--fail-fg); }
+
+/* Spacing for the "Recent runs" heading above the results list. */
+.dev-results-heading { margin-top: 28px; }
+.dev-results { margin-top: 12px; }
+
+/* ============================================================
+   FOLDER HEADER TOOLBAR + MODE DROPDOWN + TESTING SCREEN
+   ============================================================ */
+
+/* Title on the left, mode picker + Testing button on the right. */
+.folder-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.folder-header-main { min-width: 0; }
+/* The title already carries bottom margin; neutralise it inside the header. */
+.folder-header .folder-title { margin-bottom: 0; }
+.folder-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.testing-btn { display: inline-flex; align-items: center; gap: 6px; }
+
+/* Compact mode picker: pill-shaped wrapper + colour dot + borderless select. */
+.mode-select-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-pill);
+  padding: 4px 8px 4px 12px;
+  box-shadow: var(--shadow-sm);
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.mode-select-wrap:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.mode-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex: 0 0 auto;
+}
+.mode-select-wrap.mode-development { border-color: var(--mode-dev-line); }
+.mode-select-wrap.mode-development .mode-dot { background: var(--mode-dev-fg); }
+.mode-select-wrap.mode-production { border-color: var(--mode-prod-line); }
+.mode-select-wrap.mode-production .mode-dot { background: var(--mode-prod-fg); }
+.mode-select {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 3px 4px;
+  cursor: pointer;
+  -moz-appearance: none;
+  appearance: none;
+}
+/* Keep the focus ring on the wrapper, not the borderless select itself. */
+.mode-select:focus { outline: none; box-shadow: none !important; border-color: transparent !important; }
+
+/* --- "Testing against" summary panel --- */
+.testing-against { padding: 4px 0; }
+.ta-group { padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.ta-group:last-child { border-bottom: none; }
+.ta-group-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.ta-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.ta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 6px 4px 11px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-alt);
+  color: var(--text);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.ta-weight {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 8px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.ta-killers { display: flex; flex-direction: column; gap: 8px; }
+.ta-killer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ta-killer-q { font-size: 13px; color: var(--text); line-height: 1.45; }
+.ta-empty { font-size: 13px; color: var(--text-faint); }
+
+/* Non-Development prompt banner on the Testing screen. */
+.testing-prompt strong { font-weight: 700; }
+
+@media (max-width: 640px) {
+  .folder-toolbar { width: 100%; }
+  .ta-killer { flex-direction: column; align-items: flex-start; gap: 6px; }
+}

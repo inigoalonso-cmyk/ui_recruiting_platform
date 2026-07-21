@@ -17,6 +17,7 @@ const state = {
   analyticsJob: '', // '' = all jobs, else a job id, for the analytics funnel
   jobInfoView: 'facts', // 'facts' or 'suggestions' sub-view of Job Info
   openSuggestionKey: null, // normalized text of the suggestion whose add form is open
+  testingJobId: null, // job id whose full-screen Testing (sandbox) view is open, else null
 };
 
 // Pass/fail cutoff, read from settings (falls back to 8 until loaded).
@@ -237,6 +238,7 @@ async function selectFolder(id) {
   state.selected = id;
   state.view = 'criteria';
   state.historyApp = null;
+  state.testingJobId = null; // selecting a folder always lands on its criteria view
   document.getElementById('nav-criteria').classList.add('active');
   document.getElementById('nav-history').classList.remove('active');
   document.getElementById('criteria-nav').style.display = '';
@@ -246,6 +248,7 @@ async function selectFolder(id) {
 
 function setView(view) {
   state.view = view;
+  state.testingJobId = null; // Criteria/History nav leaves the Testing screen
   document.getElementById('nav-criteria').classList.toggle('active', view === 'criteria');
   document.getElementById('nav-history').classList.toggle('active', view === 'history');
   document.getElementById('criteria-nav').style.display = view === 'criteria' ? '' : 'none';
@@ -281,6 +284,8 @@ async function renderContent() {
   }
   if (state.selected === 'general') {
     await renderGeneralView();
+  } else if (state.testingJobId && state.testingJobId === state.selected) {
+    await renderTestingView(state.selected);
   } else {
     await renderJobView(state.selected);
   }
@@ -302,9 +307,16 @@ async function renderJobView(jobId) {
   const mode = job.mode || 'normal';
 
   contentEl.innerHTML = `
-    <div class="folder-label">Job folder</div>
-    <h1 class="folder-title">${escapeHtml(job.name)}</h1>
-    ${modeSegmentHtml(mode)}
+    <div class="folder-header">
+      <div class="folder-header-main">
+        <div class="folder-label">Job folder</div>
+        <h1 class="folder-title">${escapeHtml(job.name)}</h1>
+      </div>
+      <div class="folder-toolbar">
+        ${modeDropdownHtml(mode)}
+        <button type="button" class="btn-secondary testing-btn" id="open-testing" title="Open the testing sandbox">🧪 Testing</button>
+      </div>
+    </div>
     ${modeBannerHtml(mode)}
     <div class="folder-meta">
       Ashby ID (job):
@@ -312,12 +324,10 @@ async function renderJobView(jobId) {
     </div>
     <div class="section" id="params-section"></div>
     <div class="section" id="killer-section"></div>
-    ${mode === 'development' ? '<div class="section" id="dev-section"></div>' : ''}
   `;
 
-  contentEl.querySelectorAll('.mode-seg-btn').forEach(btn => {
-    btn.addEventListener('click', () => switchMode(jobId, btn.dataset.mode));
-  });
+  wireModeDropdown(contentEl, jobId);
+  document.getElementById('open-testing').addEventListener('click', () => openTesting(jobId));
 
   document.getElementById('ashby-job-id').addEventListener('change', async (e) => {
     try {
@@ -342,13 +352,9 @@ async function renderJobView(jobId) {
     lockSection(document.getElementById('params-section'));
     lockSection(document.getElementById('killer-section'));
   }
-
-  if (mode === 'development') {
-    await renderDevSection(document.getElementById('dev-section'), jobId);
-  }
 }
 
-// ---- Folder lifecycle mode: segmented control + banner + section lock ----
+// ---- Folder lifecycle mode: dropdown picker + banner + section lock ----
 
 const MODE_META = {
   normal:      { icon: '⚪', label: 'Normal' },
@@ -356,9 +362,35 @@ const MODE_META = {
   production:  { icon: '🟢', label: 'Production' },
 };
 
-function modeSegmentHtml(mode) {
-  const btn = (m) => `<button type="button" class="mode-seg-btn mode-${m}${m === mode ? ' active' : ''}" data-mode="${m}" aria-pressed="${m === mode}">${MODE_META[m].icon} ${MODE_META[m].label}</button>`;
-  return `<div class="mode-seg" role="group" aria-label="Folder lifecycle mode">${btn('normal')}${btn('development')}${btn('production')}</div>`;
+// Compact mode picker: a styled native <select> wrapped so the current mode's
+// colour dot is visible. Selecting an option calls switchMode() (wired
+// separately so the same markup can be reused on the folder + Testing views).
+function modeDropdownHtml(mode) {
+  const opt = (m) => `<option value="${m}"${m === mode ? ' selected' : ''}>${MODE_META[m].icon} ${MODE_META[m].label}</option>`;
+  return `
+    <div class="mode-select-wrap mode-${mode}" title="Folder lifecycle mode">
+      <span class="mode-dot" aria-hidden="true"></span>
+      <select class="mode-select" aria-label="Folder lifecycle mode">
+        ${opt('normal')}${opt('development')}${opt('production')}
+      </select>
+    </div>`;
+}
+
+// Wire every mode <select> inside a container to switchMode for the given job.
+function wireModeDropdown(container, jobId) {
+  container.querySelectorAll('.mode-select').forEach((sel) => {
+    sel.addEventListener('change', () => switchMode(jobId, sel.value));
+  });
+}
+
+// ---- Full-screen Testing (sandbox) view navigation ----
+function openTesting(jobId) {
+  state.testingJobId = jobId;
+  renderContent();
+}
+function closeTesting() {
+  state.testingJobId = null;
+  renderContent();
 }
 
 function modeBannerHtml(mode) {
@@ -409,10 +441,98 @@ function fmtRelative(iso) {
   return fmtDate(iso);
 }
 
-async function renderDevSection(container, jobId) {
+// Full-screen Testing view for a single folder: mode picker + a read-only
+// "Testing against" summary + the sandbox (upload / run / results). The sandbox
+// only runs when the folder is in Development; past results always show.
+async function renderTestingView(jobId) {
+  const job = state.jobs.find(j => j.id === jobId);
+  if (!job) { state.testingJobId = null; return renderContent(); }
+  const mode = job.mode || 'normal';
+  const isDev = mode === 'development';
+
+  contentEl.innerHTML = `
+    <button class="back-link" id="testing-back">← Back to criteria</button>
+    <div class="folder-header">
+      <div class="folder-header-main">
+        <div class="folder-label">Testing</div>
+        <h1 class="folder-title">🧪 Testing — ${escapeHtml(job.name)}</h1>
+      </div>
+      <div class="folder-toolbar">
+        ${modeDropdownHtml(mode)}
+      </div>
+    </div>
+    ${isDev
+      ? ''
+      : `<div class="mode-banner mode-development testing-prompt">🟠 Set this folder to <strong>Development</strong> to run test screenings. Past results are still shown below.</div>`}
+    <div class="section" id="testing-summary"></div>
+    <div class="section" id="dev-section"></div>
+  `;
+
+  document.getElementById('testing-back').addEventListener('click', closeTesting);
+  wireModeDropdown(contentEl, jobId);
+
+  await renderTestingSummary(document.getElementById('testing-summary'), jobId);
+  await renderDevSection(document.getElementById('dev-section'), jobId, { disabled: !isDev });
+}
+
+// Compact, read-only panel showing what a test CV is scored against: the job's
+// evaluation parameters (with weights), the always-applied General parameters,
+// and the killer questions.
+async function renderTestingSummary(container, jobId) {
   if (!container) return;
   container.innerHTML = `
-    <div class="section-heading"><h2>Development sandbox</h2></div>
+    <div class="section-heading"><h2>Testing against</h2></div>
+    <div class="card testing-against"><div class="empty-state">Loading…</div></div>`;
+  const cardEl = container.querySelector('.testing-against');
+
+  let params = [], general = [], killers = [];
+  try {
+    [params, general, killers] = await Promise.all([
+      api(`/jobs/${jobId}/parameters`),
+      api('/jobs/general/parameters').catch(() => []),
+      api(`/jobs/${jobId}/killer-questions`),
+    ]);
+  } catch (err) {
+    cardEl.innerHTML = `<div class="empty-state">Could not load criteria: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+
+  const chip = (p) => `<span class="ta-chip">${escapeHtml(p.name)}<span class="ta-weight">${escapeHtml(String(p.weight))}</span></span>`;
+  const group = (label, inner) => `
+    <div class="ta-group">
+      <div class="ta-group-label">${escapeHtml(label)}</div>
+      ${inner}
+    </div>`;
+
+  const paramsHtml = params.length
+    ? `<div class="ta-chips">${params.map(chip).join('')}</div>`
+    : `<div class="ta-empty">No job-specific parameters.</div>`;
+
+  const generalHtml = general.length
+    ? group('General parameters (all jobs)', `<div class="ta-chips">${general.map(chip).join('')}</div>`)
+    : '';
+
+  const killersHtml = killers.length
+    ? `<div class="ta-killers">${killers.map(k => {
+        const pass = k.expected_answer === undefined || k.expected_answer === null ? true : !!k.expected_answer;
+        return `<div class="ta-killer">
+          <span class="ta-killer-q">${escapeHtml(k.question)}</span>
+          <span class="pill ${pass ? 'pass' : 'fail'}">expects ${pass ? 'True' : 'False'}</span>
+        </div>`;
+      }).join('')}</div>`
+    : `<div class="ta-empty">No killer questions.</div>`;
+
+  cardEl.innerHTML =
+    group('Evaluation parameters', paramsHtml)
+    + generalHtml
+    + group('Killer questions', killersHtml);
+}
+
+async function renderDevSection(container, jobId, opts = {}) {
+  if (!container) return;
+  const disabled = !!opts.disabled;
+  container.innerHTML = `
+    <div class="section-heading"><h2>Run a test screening</h2></div>
     <div class="section-hint">Upload a test CV and run the exact same scoring as production — plus a reason for each parameter.</div>
     <div class="card dev-run-card">
       <div class="dev-drop" id="dev-drop">
@@ -424,9 +544,10 @@ async function renderDevSection(container, jobId) {
       </div>
       <div class="dev-run-row">
         <input type="text" id="dev-candidate" class="dev-candidate-input" placeholder="Candidate name (optional)" autocomplete="off" />
-        <button type="button" class="btn-primary" id="dev-run-btn">Run screening</button>
+        <button type="button" class="btn-primary" id="dev-run-btn"${disabled ? ' disabled title="Set this folder to Development to run screenings"' : ''}>Run screening</button>
       </div>
     </div>
+    <div class="section-heading dev-results-heading"><h2>Recent runs</h2></div>
     <div class="dev-results" id="dev-results"><div class="empty-state">Loading runs…</div></div>
   `;
 
@@ -531,9 +652,10 @@ function buildDevRunCard(run, jobId) {
   } else if (status === 'done') {
     const score = run.score == null ? '—' : `${run.score}/10`;
     let pill = '';
-    if (run.passed === true) pill = `<span class="pill pass">Pass</span>`;
-    else if (run.passed === false) pill = `<span class="pill fail">Fail vs threshold ${escapeHtml(String(run.pass_threshold))}</span>`;
-    rightHtml = `<div class="dev-score-wrap"><span class="dev-score">${escapeHtml(String(score))}</span>${pill}</div>`;
+    let scoreCls = '';
+    if (run.passed === true) { pill = `<span class="pill pass">Pass</span>`; scoreCls = ' pass'; }
+    else if (run.passed === false) { pill = `<span class="pill fail">Fail vs threshold ${escapeHtml(String(run.pass_threshold))}</span>`; scoreCls = ' fail'; }
+    rightHtml = `<div class="dev-score-wrap"><span class="dev-score${scoreCls}">${escapeHtml(String(score))}</span>${pill}</div>`;
   }
 
   el.innerHTML = `
@@ -597,7 +719,7 @@ function pollDevRun(jobId, runId) {
   const start = Date.now();
   const interval = setInterval(async () => {
     const stillHere = state.section === 'screening' && state.view === 'criteria'
-      && state.selected === jobId && document.getElementById('dev-results');
+      && state.testingJobId === jobId && document.getElementById('dev-results');
     if (!stillHere || Date.now() - start > 60000) { clearInterval(interval); return; }
     try {
       const run = await api(`/jobs/${jobId}/dev/results/${runId}`);
@@ -803,6 +925,7 @@ document.getElementById('new-job-form').addEventListener('submit', async (e) => 
 
 function setSection(section) {
   state.section = section;
+  state.testingJobId = null; // leaving/among sections closes the Testing screen
   document.getElementById('section-screening').classList.toggle('active', section === 'screening');
   document.getElementById('section-recruiters').classList.toggle('active', section === 'recruiters');
   document.getElementById('section-jobinfo').classList.toggle('active', section === 'jobinfo');
@@ -1932,6 +2055,7 @@ async function loadSettings() {
 
 function setSettingsView() {
   state.section = 'settings';
+  state.testingJobId = null;
   document.getElementById('section-screening').classList.remove('active');
   document.getElementById('section-recruiters').classList.remove('active');
   document.getElementById('section-jobinfo').classList.remove('active');
