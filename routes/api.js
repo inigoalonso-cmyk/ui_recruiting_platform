@@ -380,7 +380,9 @@ router.post('/sync/ashby-job', requireSyncKey, (req, res) => {
         action = 'adopted';
       } else {
         const id = uuid();
-        db.prepare('INSERT INTO jobs (id, name, ashby_job_id) VALUES (?, ?, ?)').run(id, canonicalTitle, roleKey);
+        // Sync-created folders start in 'normal' (not scored) until a recruiter
+        // sets them up and promotes them to production.
+        db.prepare("INSERT INTO jobs (id, name, ashby_job_id, mode) VALUES (?, ?, ?, 'normal')").run(id, canonicalTitle, roleKey);
         job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
         action = 'created';
       }

@@ -229,11 +229,11 @@ ensureColumn('killer_questions', 'expected_answer', 'expected_answer INTEGER NOT
 //                   plus a per-parameter rationale. Never touches Ashby.
 //   'production'  — scored automatically by the 5-min Prescreening cron, exactly
 //                   as today. The cron skips any folder NOT in this mode.
-// Existing rows backfill to 'production' so anything currently being scored keeps
-// working with zero regression. (New MANUAL folders start in 'normal' — set
-// explicitly in POST /api/jobs — matching the normal → development → production
-// tuning flow.)
-ensureColumn('jobs', 'mode', "mode TEXT NOT NULL DEFAULT 'production'");
+// Folders default to 'normal' (parked/editable, not scored) — the recruiter
+// promotes to 'development' to test and then 'production' to go live. On a fresh
+// DB every row starts 'normal'; new manual folders set it explicitly in
+// POST /api/jobs and the Ashby sync sets it explicitly too.
+ensureColumn('jobs', 'mode', "mode TEXT NOT NULL DEFAULT 'normal'");
 
 // Development sandbox runs. A folder in 'development' mode is tuned by uploading a
 // test CV and running the cloned "Prescreening Testing" workflow against it. Each
