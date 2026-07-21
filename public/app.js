@@ -47,6 +47,28 @@ wireFolderFilter('folder-filter', folderListEl);
 wireFolderFilter('recruiter-folder-filter', recruiterFolderListEl);
 wireFolderFilter('jobinfo-folder-filter', jobinfoFolderListEl);
 
+// ---- Theme toggle (persisted; initial theme applied in <head>) ----
+document.getElementById('theme-toggle').addEventListener('click', () => {
+  const dark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if (dark) document.documentElement.removeAttribute('data-theme');
+  else document.documentElement.setAttribute('data-theme', 'dark');
+  try { localStorage.setItem('hr-theme', dark ? 'light' : 'dark'); } catch (e) {}
+});
+
+// ---- Keyboard: "/" or ⌘/Ctrl+K focuses the visible folder filter ----
+document.addEventListener('keydown', (e) => {
+  const tag = (e.target.tagName || '').toLowerCase();
+  const typing = tag === 'input' || tag === 'textarea' || tag === 'select' || e.target.isContentEditable;
+  const slash = e.key === '/' && !typing;
+  const cmdK = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k';
+  if (slash || cmdK) {
+    const visible = ['folder-filter', 'jobinfo-folder-filter', 'recruiter-folder-filter']
+      .map(id => document.getElementById(id))
+      .find(el => el && el.offsetParent !== null);
+    if (visible) { e.preventDefault(); visible.focus(); visible.select(); }
+  }
+});
+
 function showToast(msg, isError = false) {
   toastEl.textContent = msg;
   toastEl.className = 'toast show' + (isError ? ' error' : '');

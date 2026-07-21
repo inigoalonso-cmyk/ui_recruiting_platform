@@ -1673,3 +1673,49 @@ input:focus, select:focus, textarea:focus { box-shadow: 0 0 0 3px var(--accent-r
 
 /* --- Toast --- */
 .toast { border-radius: var(--radius); box-shadow: var(--shadow-lg); font-weight: 500; letter-spacing: -0.01em; }
+
+/* ============================================================
+   DARK MODE
+   ============================================================ */
+html[data-theme="dark"] {
+  --bg: #0B0F1A;
+  --surface: #131A2A;
+  --surface-alt: #1B2334;
+  --surface-sunken: #0F1522;
+  --line: #232C40;
+  --line-strong: #33405A;
+  --text: #E7ECF4;
+  --text-muted: #9AA4B8;
+  --text-faint: #697388;
+  --accent: #7C83FF;
+  --accent-hover: #939AFF;
+  --accent-soft: #1E2440;
+  --accent-ring: rgba(124, 131, 255, 0.32);
+  --dark: #1B2334;
+  --pass-bg: #10331F; --pass-fg: #4ADE80;
+  --fail-bg: #3A1620; --fail-fg: #FB7185;
+  --neutral-bg: #1B2334; --neutral-fg: #9AA4B8;
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 6px 16px -4px rgba(0, 0, 0, 0.5), 0 2px 6px -2px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 18px 40px -12px rgba(0, 0, 0, 0.62);
+}
+html[data-theme="dark"] body { background: var(--bg); }
+html[data-theme="dark"] .icon-rail { background: linear-gradient(180deg, #0F1522 0%, #0B0F1A 100%); }
+html[data-theme="dark"] .brand-mark { background: #1B2334; }
+html[data-theme="dark"] .folder-list::-webkit-scrollbar-thumb,
+html[data-theme="dark"] .main::-webkit-scrollbar-thumb { background: #2A3550; background-clip: padding-box; }
+
+/* Theme toggle icon swap */
+.icon-btn .ico-sun, .icon-btn .ico-moon { width: 20px; height: 20px; }
+.ico-sun { display: none; }
+html[data-theme="dark"] .ico-moon { display: none; }
+html[data-theme="dark"] .ico-sun { display: block; }
+
+/* Smooth theme transition */
+html, body, .rail, .icon-rail, .main, .card, .killer-list, .folder-tab, .rail-nav, .folder-filter, input, select, textarea {
+  transition: background-color .2s ease, border-color .2s ease, color .2s ease;
+}
+
+/* Subtle content fade-in */
+#content { animation: contentIn .24s ease both; }
+@keyframes contentIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
