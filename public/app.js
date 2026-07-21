@@ -200,7 +200,6 @@ async function confirmRemoveFolder(job) {
     fCount = facts.length;
   } catch { /* fall back to 0s in the message */ }
 
-  const plural = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
   RowMenu.confirmDialog({
     title: 'Delete folder',
     message: `Delete "${job.name}"? This removes the job folder and all ${plural(pCount, 'parameter')}, ${plural(kCount, 'killer question')}, and ${plural(fCount, 'job-info fact')} in it. This can't be undone.`,
@@ -219,10 +218,18 @@ async function confirmRemoveFolder(job) {
   });
 }
 
+// Escapes &, <, >, and BOTH quote characters. The quotes matter because the
+// result is interpolated into double-quoted HTML attributes (value="...",
+// data-*="..."); a stray " in a folder/param/fact name would otherwise break
+// out of the attribute. (textContent→innerHTML only escapes &, <, > — not quotes.)
 function escapeHtml(str) {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
+  if (str == null) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 // Initials for the little circular avatars (e.g. "Jorge Janeiro" -> "JJ").
@@ -232,6 +239,11 @@ function initials(name) {
   const parts = s.split(/\s+/).filter(Boolean);
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+// "1 parameter" / "3 parameters" — pluralize a count + word.
+function plural(n, w) {
+  return `${n} ${w}${n === 1 ? '' : 's'}`;
 }
 
 async function selectFolder(id) {
@@ -255,7 +267,28 @@ function setView(view) {
   renderContent();
 }
 
+// Serialize renders: renderContent() is fired (often without await) from many
+// handlers, and each render sets contentEl.innerHTML then awaits fetches before
+// filling sub-sections — so overlapping renders could let a slow earlier fetch
+// overwrite newer content. This wrapper runs one render at a time and, if more
+// calls arrive mid-render, coalesces them into a single final re-render with the
+// latest state, so the last request always wins.
+let _rendering = false;
+let _renderQueued = false;
 async function renderContent() {
+  if (_rendering) { _renderQueued = true; return; }
+  _rendering = true;
+  try {
+    do {
+      _renderQueued = false;
+      await renderContentOnce();
+    } while (_renderQueued);
+  } finally {
+    _rendering = false;
+  }
+}
+
+async function renderContentOnce() {
   if (state.section === 'recruiters') {
     await renderRecruitersView();
     return;
@@ -1089,7 +1122,6 @@ async function confirmRemoveRecruiterFolder(job) {
   // the folder cascades its recruiter contacts).
   let n = 0;
   try { n = (await api(`/recruiter-jobs/${job.id}/recruiters`)).length; } catch { /* fall back to 0 */ }
-  const plural = (c, w) => `${c} ${w}${c === 1 ? '' : 's'}`;
   RowMenu.confirmDialog({
     title: 'Delete folder',
     message: `Delete "${job.name}"? This removes the folder and ${plural(n, 'recruiter')} in it. This can't be undone.`,
@@ -1553,14 +1585,20 @@ function buildFactBanner(f, resource = 'job-info') {
   // propagation so it won't toggle. Toggle just this card for smooth,
   // independent open/close without a full re-render.
   el.setAttribute('role', 'button');
+  el.setAttribute('tabindex', '0');
   el.setAttribute('aria-expanded', String(expanded));
-  el.addEventListener('click', () => {
+  const toggle = () => {
     const nowExpanded = !state.expandedFacts.has(f.id);
     if (nowExpanded) state.expandedFacts.add(f.id);
     else state.expandedFacts.delete(f.id);
     el.classList.toggle('expanded', nowExpanded);
     el.setAttribute('aria-expanded', String(nowExpanded));
     chevron.textContent = nowExpanded ? '˄' : '˅';
+  };
+  el.addEventListener('click', toggle);
+  // Keyboard access: the card has role="button", so Enter/Space must toggle it too.
+  el.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }
   });
   return el;
 }

@@ -1595,7 +1595,6 @@ body { overflow: hidden; }
 .folder-tab.pinned { color: var(--text); justify-content: flex-start; }
 .folder-tab.pinned .folder-tab-ico { flex: 0 0 auto; margin-right: 9px; opacity: .65; }
 .folder-tab.pinned.active .folder-tab-ico { opacity: 1; }
-.folder-tab.pinned.active .folder-tab-ico { opacity: 1; }
 .folder-divider { height: 1px; background: var(--line); margin: 8px 4px; }
 
 /* --- New folder input + primary button --- */
