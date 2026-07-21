@@ -1,5 +1,7 @@
 const express = require('express');
 const { v4: uuid } = require('uuid');
+const fetch = require('node-fetch');
+const multer = require('multer');
 const db = require('../db');
 const ashby = require('./ashby');
 const { scoreAnswers } = require('./scoring');
@@ -7,8 +9,17 @@ const { canonicalizeRole } = require('./roles');
 
 const router = express.Router();
 
+// In-memory upload handler for dev-sandbox test CVs (PDF/DOCX/TXT). Kept small:
+// these are single test resumes, never bulk data.
+const uploadCv = multer({ storage: multer.memoryStorage(), limits: { fileSize: 8 * 1024 * 1024 } });
+
 // ---------- Runtime settings (editable from the Settings page) ----------
 const SETTING_DEFAULTS = { pass_threshold: '8', max_call_attempts: '3', call_recording_enabled: '0' };
+
+// Folder lifecycle modes (see db/index.js for the full contract). The 5-min
+// Prescreening cron only scores folders in 'production'; 'development' is the
+// manual sandbox; 'normal' is the editing/parked state that nobody scores.
+const JOB_MODES = ['normal', 'development', 'production'];
 
 function getSetting(key) {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
@@ -100,8 +111,25 @@ router.post('/jobs', (req, res) => {
   const { name, ashby_job_id } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
   const id = uuid();
-  db.prepare('INSERT INTO jobs (id, name, ashby_job_id) VALUES (?, ?, ?)').run(id, name.trim(), ashby_job_id || null);
+  // New manual folders start in 'normal' so the recruiter can set up criteria and
+  // test them in the sandbox before promoting to 'production'. (Folders created by
+  // the Ashby sync keep the DB default 'production' to preserve today's behavior.)
+  db.prepare("INSERT INTO jobs (id, name, ashby_job_id, mode) VALUES (?, ?, ?, 'normal')").run(id, name.trim(), ashby_job_id || null);
   res.status(201).json(db.prepare('SELECT * FROM jobs WHERE id = ?').get(id));
+});
+
+// Switch a folder's lifecycle mode (normal | development | production). This is
+// the single control behind the folder-header state selector; the 5-min cron
+// reads it (via /evaluation-config) to decide whether to score the folder.
+router.put('/jobs/:id/mode', (req, res) => {
+  const { mode } = req.body;
+  if (!JOB_MODES.includes(mode)) {
+    return res.status(400).json({ error: `mode must be one of: ${JOB_MODES.join(', ')}` });
+  }
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+  db.prepare('UPDATE jobs SET mode = ? WHERE id = ?').run(mode, req.params.id);
+  res.json(db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id));
 });
 
 router.put('/jobs/:id', (req, res) => {
@@ -717,7 +745,10 @@ router.get('/jobs/:jobId/evaluation-config', requireInternalKey, (req, res) => {
   });
 
   res.json({
-    job: { id: job.id, name: job.name, ashby_job_id: job.ashby_job_id },
+    job: { id: job.id, name: job.name, ashby_job_id: job.ashby_job_id, mode: job.mode },
+    // Top-level too so the Prescreening cron guard can read {{...mode}} directly:
+    // it must only score folders whose mode === 'production' and skip the rest.
+    mode: job.mode,
     weight_total: weightTotal,
     general_parameters: generalParams.map(withEffective),
     job_parameters: jobParams.map(withEffective),
@@ -771,6 +802,166 @@ router.post('/candidates/score', requireInternalKey, async (req, res) => {
 router.get('/score-log', (req, res) => {
   const rows = db.prepare('SELECT * FROM score_log ORDER BY created_at DESC LIMIT 200').all();
   res.json(rows);
+});
+
+// ================= DEVELOPMENT SANDBOX (Prescreening Testing) =================
+// A folder in 'development' mode is tuned here: the recruiter uploads a test CV,
+// the cloned "Prescreening Testing" workflow scores it with the SAME scoring agent
+// as production (so the number is IDENTICAL) and adds a per-parameter rationale,
+// then POSTs the result back to POST /jobs/:id/dev/result. Nothing here touches
+// Ashby. Each run is one dev_test_runs row: created 'pending' by /dev/run,
+// completed by /dev/result. The pass/fail verdict is NOT computed by the workflow;
+// the dashboard derives it from the current pass_threshold at read time.
+
+function safeParseJson(str, fallback) {
+  if (str == null) return fallback;
+  try { return JSON.parse(str); } catch { return fallback; }
+}
+
+// Shape a dev run row for the UI: booleans/JSON parsed, verdict derived live.
+function presentDevRun(r) {
+  if (!r) return r;
+  const threshold = getPassThreshold();
+  return {
+    ...r,
+    score: r.score == null ? null : Number(r.score),
+    passed: r.score == null ? null : Number(r.score) >= threshold,
+    pass_threshold: threshold,
+    parameter_breakdown: r.parameter_breakdown || null,
+    parameter_reasoning: safeParseJson(r.parameter_reasoning, []),
+    config_snapshot: safeParseJson(r.config_snapshot, null),
+  };
+}
+
+// Convert an uploaded resume document to plain text. The dashboard does this so
+// the workflow receives text directly (no OCR needed). Pure-JS parsers only.
+async function extractCvText(file) {
+  const name = (file.originalname || '').toLowerCase();
+  const mime = file.mimetype || '';
+  if (mime.includes('pdf') || name.endsWith('.pdf')) {
+    const pdfParse = require('pdf-parse');
+    const data = await pdfParse(file.buffer);
+    return data.text || '';
+  }
+  if (name.endsWith('.docx') || mime.includes('officedocument.wordprocessingml')) {
+    const mammoth = require('mammoth');
+    const { value } = await mammoth.extractRawText({ buffer: file.buffer });
+    return value || '';
+  }
+  if (mime.startsWith('text/') || name.endsWith('.txt') || name.endsWith('.md')) {
+    return file.buffer.toString('utf8');
+  }
+  throw new Error('unsupported file type — upload a PDF, DOCX, or TXT');
+}
+
+// UI -> dashboard: upload a test CV and kick off a dev run. Parses the document to
+// text here, snapshots the current criteria, creates a 'pending' row, and fires the
+// cloned "Prescreening Testing" workflow. The workflow scores + explains and calls
+// back POST /dev/result. Only allowed while the folder is in 'development' mode.
+router.post('/jobs/:id/dev/run', uploadCv.single('cv'), async (req, res) => {
+  const job = db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'job not found' });
+  if (job.mode !== 'development') {
+    return res.status(409).json({ error: "folder must be in 'development' mode to run the sandbox" });
+  }
+  if (!req.file) return res.status(400).json({ error: 'a CV file is required (form field: cv)' });
+
+  let cvText;
+  try {
+    cvText = (await extractCvText(req.file)).trim();
+  } catch (err) {
+    return res.status(400).json({ error: `could not read CV: ${err.message}` });
+  }
+  if (!cvText) return res.status(400).json({ error: 'the CV appears to be empty or unreadable' });
+
+  const candidateName = String(req.body.candidate_name || req.file.originalname || 'Test candidate').trim();
+
+  // Snapshot the criteria used for this run (general + job-specific + killer qs).
+  const configSnapshot = {
+    general_parameters: db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL').all(),
+    job_parameters: db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ?').all(job.id),
+    killer_questions: db.prepare('SELECT question, expected_answer, added_by FROM killer_questions WHERE job_id = ?').all(job.id),
+  };
+
+  const runId = uuid();
+  db.prepare(`
+    INSERT INTO dev_test_runs (id, job_id, candidate_name, cv_filename, cv_text, status, config_snapshot, created_by)
+    VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+  `).run(runId, job.id, candidateName, req.file.originalname || null, cvText, JSON.stringify(configSnapshot), req.body.created_by || null);
+
+  // Fire the published "Prescreening Dev" HappyRobot webhook. Defaults to the live
+  // hook so it works out of the box; override with PRESCREENING_TESTING_TRIGGER_URL
+  // (e.g. if the workflow is re-published under a new slug). If the run can't be
+  // started, mark it 'error' so the UI shows why instead of hanging.
+  const triggerUrl = process.env.PRESCREENING_TESTING_TRIGGER_URL
+    || 'https://workflows.platform.happyrobot.ai/hooks/s7tv6b29ya03';
+  const markError = (msg) => db.prepare("UPDATE dev_test_runs SET status='error', error=?, updated_at=datetime('now') WHERE id=?").run(msg, runId);
+
+  try {
+    const headers = { 'Content-Type': 'application/json' };
+    if (process.env.PRESCREENING_TESTING_TRIGGER_KEY) headers['x-api-key'] = process.env.PRESCREENING_TESTING_TRIGGER_KEY;
+    const resp = await fetch(triggerUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ run_id: runId, job_id: job.id, candidate_name: candidateName, cv_text: cvText }),
+    });
+    if (!resp.ok) throw new Error(`trigger responded ${resp.status}`);
+  } catch (err) {
+    markError(`failed to trigger workflow: ${err.message}`);
+    return res.status(502).json({ error: `could not start the dev run: ${err.message}`, run: presentDevRun(db.prepare('SELECT * FROM dev_test_runs WHERE id = ?').get(runId)) });
+  }
+
+  res.status(201).json(presentDevRun(db.prepare('SELECT * FROM dev_test_runs WHERE id = ?').get(runId)));
+});
+
+// Workflow -> dashboard: store the scored result for a dev run. Guarded by the
+// internal key (same credential the workflow already uses for /evaluation-config).
+router.post('/jobs/:id/dev/result', requireInternalKey, (req, res) => {
+  const { run_id, candidate_name, score, rationale, parameter_breakdown, parameter_reasoning } = req.body;
+  if (!run_id) return res.status(400).json({ error: 'run_id is required' });
+  const run = db.prepare('SELECT * FROM dev_test_runs WHERE id = ? AND job_id = ?').get(run_id, req.params.id);
+  if (!run) return res.status(404).json({ error: 'dev run not found for this job' });
+
+  db.prepare(`
+    UPDATE dev_test_runs SET
+      status = 'done',
+      candidate_name = COALESCE(?, candidate_name),
+      score = ?,
+      rationale = ?,
+      parameter_breakdown = ?,
+      parameter_reasoning = ?,
+      error = NULL,
+      updated_at = datetime('now')
+    WHERE id = ?
+  `).run(
+    candidate_name || null,
+    score == null || Number.isNaN(Number(score)) ? null : Number(score),
+    rationale || null,
+    parameter_breakdown == null ? null : String(parameter_breakdown),
+    JSON.stringify(parameter_reasoning || []),
+    run_id,
+  );
+
+  res.json({ ok: true, run: presentDevRun(db.prepare('SELECT * FROM dev_test_runs WHERE id = ?').get(run_id)) });
+});
+
+// UI -> dashboard: list recent dev runs for a folder (most recent first).
+router.get('/jobs/:id/dev/results', (req, res) => {
+  const rows = db.prepare('SELECT * FROM dev_test_runs WHERE job_id = ? ORDER BY created_at DESC LIMIT 50').all(req.params.id);
+  res.json(rows.map(presentDevRun));
+});
+
+// UI -> dashboard: fetch a single dev run (for polling while it's 'pending').
+router.get('/jobs/:id/dev/results/:runId', (req, res) => {
+  const run = db.prepare('SELECT * FROM dev_test_runs WHERE id = ? AND job_id = ?').get(req.params.runId, req.params.id);
+  if (!run) return res.status(404).json({ error: 'dev run not found' });
+  res.json(presentDevRun(run));
+});
+
+// UI -> dashboard: delete a dev run (clean up the sandbox).
+router.delete('/jobs/:id/dev/results/:runId', (req, res) => {
+  db.prepare('DELETE FROM dev_test_runs WHERE id = ? AND job_id = ?').run(req.params.runId, req.params.id);
+  res.status(204).end();
 });
 
 // ================= AGENT INTERVIEW (Phase 2) =================

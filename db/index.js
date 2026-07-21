@@ -222,6 +222,47 @@ ensureColumn('killer_questions', 'weight', 'weight REAL NOT NULL DEFAULT 1');
 // preserves the historical "true = pass" behavior for existing questions.
 ensureColumn('killer_questions', 'expected_answer', 'expected_answer INTEGER NOT NULL DEFAULT 1');
 
+// Job folders carry a lifecycle mode:
+//   'normal'      — editing/parking. Criteria are editable; NOT scored by anyone.
+//   'development' — manual sandbox: the recruiter runs the cloned "Prescreening
+//                   (Dev)" workflow against an uploaded test CV and sees the score
+//                   plus a per-parameter rationale. Never touches Ashby.
+//   'production'  — scored automatically by the 5-min Prescreening cron, exactly
+//                   as today. The cron skips any folder NOT in this mode.
+// Existing rows backfill to 'production' so anything currently being scored keeps
+// working with zero regression. (New MANUAL folders start in 'normal' — set
+// explicitly in POST /api/jobs — matching the normal → development → production
+// tuning flow.)
+ensureColumn('jobs', 'mode', "mode TEXT NOT NULL DEFAULT 'production'");
+
+// Development sandbox runs. A folder in 'development' mode is tuned by uploading a
+// test CV and running the cloned "Prescreening Testing" workflow against it. Each
+// run is one row: created 'pending' by POST /api/jobs/:id/dev/run (which stores the
+// parsed CV text + a snapshot of the criteria used), then completed by the workflow
+// via POST /api/jobs/:id/dev/result (score + rationale + per-parameter reasoning).
+// NOTHING here ever touches Ashby — this data is test-only and folder-scoped.
+db.exec(`
+CREATE TABLE IF NOT EXISTS dev_test_runs (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  candidate_name TEXT,
+  cv_filename TEXT,
+  cv_text TEXT,
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'done', 'error')),
+  score REAL,
+  rationale TEXT,
+  passed INTEGER,
+  parameter_breakdown TEXT,      -- markdown string: the scoring agent's per-parameter "why"
+  parameter_reasoning TEXT,      -- (legacy/optional) JSON array [{parameter, importance, note}]
+  config_snapshot TEXT,          -- JSON of the criteria+weights used for this run
+  error TEXT,
+  created_by TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_dev_test_runs_job ON dev_test_runs (job_id, created_at DESC);
+`);
+
 // The Ashby → dashboard sync (POST /api/sync/ashby-job) upserts a job folder by
 // its Ashby job id, so that column must be unique to prevent two folders from
 // claiming the same Ashby job. A PARTIAL index (WHERE ashby_job_id IS NOT NULL)

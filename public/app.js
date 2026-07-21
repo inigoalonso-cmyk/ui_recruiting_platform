@@ -299,17 +299,25 @@ async function renderGeneralView() {
 async function renderJobView(jobId) {
   const job = state.jobs.find(j => j.id === jobId);
   if (!job) return;
+  const mode = job.mode || 'normal';
 
   contentEl.innerHTML = `
     <div class="folder-label">Job folder</div>
     <h1 class="folder-title">${escapeHtml(job.name)}</h1>
+    ${modeSegmentHtml(mode)}
+    ${modeBannerHtml(mode)}
     <div class="folder-meta">
       Ashby ID (job):
       <input type="text" id="ashby-job-id" value="${escapeHtml(job.ashby_job_id || '')}" placeholder="not linked" />
     </div>
     <div class="section" id="params-section"></div>
     <div class="section" id="killer-section"></div>
+    ${mode === 'development' ? '<div class="section" id="dev-section"></div>' : ''}
   `;
+
+  contentEl.querySelectorAll('.mode-seg-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchMode(jobId, btn.dataset.mode));
+  });
 
   document.getElementById('ashby-job-id').addEventListener('change', async (e) => {
     try {
@@ -326,6 +334,279 @@ async function renderJobView(jobId) {
 
   renderParamsSection(document.getElementById('params-section'), params, jobId);
   renderKillerSection(document.getElementById('killer-section'), killers, jobId);
+
+  // Criteria + killer questions are only editable in Normal mode. In
+  // Development / Production the two sections render locked (disabled inputs,
+  // add/remove hidden, dimmed) so a live or under-test folder can't be changed.
+  if (mode !== 'normal') {
+    lockSection(document.getElementById('params-section'));
+    lockSection(document.getElementById('killer-section'));
+  }
+
+  if (mode === 'development') {
+    await renderDevSection(document.getElementById('dev-section'), jobId);
+  }
+}
+
+// ---- Folder lifecycle mode: segmented control + banner + section lock ----
+
+const MODE_META = {
+  normal:      { icon: '⚪', label: 'Normal' },
+  development: { icon: '🟠', label: 'Development' },
+  production:  { icon: '🟢', label: 'Production' },
+};
+
+function modeSegmentHtml(mode) {
+  const btn = (m) => `<button type="button" class="mode-seg-btn mode-${m}${m === mode ? ' active' : ''}" data-mode="${m}" aria-pressed="${m === mode}">${MODE_META[m].icon} ${MODE_META[m].label}</button>`;
+  return `<div class="mode-seg" role="group" aria-label="Folder lifecycle mode">${btn('normal')}${btn('development')}${btn('production')}</div>`;
+}
+
+function modeBannerHtml(mode) {
+  const text = {
+    normal: '⚪ Editing mode — changes are saved but this folder is not being scored. Set it to Development to test, or Production to go live.',
+    development: '🟠 Testing mode — configuration is locked. Switch to Normal to edit criteria.',
+    production: '🟢 Live — this folder is scored automatically every 5 minutes. Switch to Normal to edit.',
+  }[mode] || '';
+  return `<div class="mode-banner mode-${mode}">${escapeHtml(text)}</div>`;
+}
+
+async function switchMode(jobId, mode) {
+  const job = state.jobs.find(j => j.id === jobId);
+  if (!job || (job.mode || 'normal') === mode) return;
+  try {
+    await api(`/jobs/${jobId}/mode`, { method: 'PUT', body: JSON.stringify({ mode }) });
+    await loadJobs();
+    await renderContent();
+    showToast(`Mode set to ${(MODE_META[mode] || {}).label || mode}`);
+  } catch (err) { showToast(err.message, true); }
+}
+
+// Make a rendered section read-only: disable every control and hide the
+// add/remove affordances, then dim it via the .locked class. Does not touch the
+// shared render functions, so General and other callers are unaffected.
+function lockSection(container) {
+  if (!container) return;
+  container.classList.add('locked');
+  container.querySelectorAll('input, select, textarea, button').forEach(el => { el.disabled = true; });
+  container.querySelectorAll('.add-row-form, .add-killer-form, .add-fact-form, .row-delete').forEach(el => { el.style.display = 'none'; });
+}
+
+// ---- Development sandbox: upload a CV, run scoring, poll + list results ----
+
+// Compact relative timestamp for dev-run cards (SQLite UTC "YYYY-MM-DD HH:MM:SS").
+function fmtRelative(iso) {
+  if (!iso) return '—';
+  const d = new Date(String(iso).replace(' ', 'T') + 'Z');
+  if (isNaN(d)) return String(iso);
+  const s = Math.round((Date.now() - d.getTime()) / 1000);
+  if (s < 45) return 'just now';
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const days = Math.round(h / 24);
+  if (days < 7) return `${days}d ago`;
+  return fmtDate(iso);
+}
+
+async function renderDevSection(container, jobId) {
+  if (!container) return;
+  container.innerHTML = `
+    <div class="section-heading"><h2>Development sandbox</h2></div>
+    <div class="section-hint">Upload a test CV and run the exact same scoring as production — plus a reason for each parameter.</div>
+    <div class="card dev-run-card">
+      <div class="dev-drop" id="dev-drop">
+        <input type="file" id="dev-file" accept=".pdf,.docx,.txt" hidden />
+        <div class="dev-drop-inner">
+          <span class="dev-drop-title">Drag &amp; drop a CV here, or <button type="button" class="dev-browse" id="dev-browse">browse</button></span>
+          <span class="dev-drop-file" id="dev-file-name">PDF, DOCX or TXT</span>
+        </div>
+      </div>
+      <div class="dev-run-row">
+        <input type="text" id="dev-candidate" class="dev-candidate-input" placeholder="Candidate name (optional)" autocomplete="off" />
+        <button type="button" class="btn-primary" id="dev-run-btn">Run screening</button>
+      </div>
+    </div>
+    <div class="dev-results" id="dev-results"><div class="empty-state">Loading runs…</div></div>
+  `;
+
+  let selectedFile = null;
+  const drop = container.querySelector('#dev-drop');
+  const fileInput = container.querySelector('#dev-file');
+  const fileName = container.querySelector('#dev-file-name');
+  const runBtn = container.querySelector('#dev-run-btn');
+
+  const setFile = (file) => {
+    selectedFile = file || null;
+    fileName.textContent = selectedFile ? selectedFile.name : 'PDF, DOCX or TXT';
+  };
+
+  container.querySelector('#dev-browse').addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', () => setFile(fileInput.files[0]));
+  drop.addEventListener('click', (e) => { if (e.target === drop || e.target.classList.contains('dev-drop-inner') || e.target.classList.contains('dev-drop-title') || e.target.classList.contains('dev-drop-file')) fileInput.click(); });
+  ['dragenter', 'dragover'].forEach(ev => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('dragover'); }));
+  ['dragleave', 'dragend'].forEach(ev => drop.addEventListener(ev, () => drop.classList.remove('dragover')));
+  drop.addEventListener('drop', (e) => {
+    e.preventDefault();
+    drop.classList.remove('dragover');
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) { setFile(e.dataTransfer.files[0]); }
+  });
+
+  runBtn.addEventListener('click', () => runDevScreening(jobId, selectedFile, container.querySelector('#dev-candidate').value.trim(), runBtn));
+
+  await loadDevResults(jobId);
+}
+
+async function runDevScreening(jobId, file, candidateName, runBtn) {
+  if (!file) { showToast('Choose a CV file first', true); return; }
+  runBtn.disabled = true;
+  const original = runBtn.textContent;
+  runBtn.textContent = 'Running…';
+  try {
+    const fd = new FormData();
+    fd.append('cv', file);
+    if (candidateName) fd.append('candidate_name', candidateName);
+    // Deliberately NOT using api(): it forces a JSON content-type. Let the
+    // browser set the multipart boundary itself.
+    const res = await fetch(`/api/jobs/${jobId}/dev/run`, { method: 'POST', body: fd });
+    const data = await res.json().catch(() => ({}));
+    const run = data.run || data;
+    if (!res.ok) {
+      // e.g. 501 with { error, run }: the run row was created but the workflow
+      // trigger isn't wired up yet. Surface the message, still show the row.
+      showToast(data.error || `Error ${res.status}`, true);
+    } else {
+      showToast('Screening started');
+    }
+    await loadDevResults(jobId);
+    if (run && run.id && (run.status === 'pending' || !run.status)) pollDevRun(jobId, run.id);
+  } catch (err) {
+    showToast(err.message || 'Run failed', true);
+  } finally {
+    runBtn.disabled = false;
+    runBtn.textContent = original;
+  }
+}
+
+async function loadDevResults(jobId) {
+  const listEl = document.getElementById('dev-results');
+  if (!listEl) return;
+  let runs;
+  try {
+    runs = await api(`/jobs/${jobId}/dev/results`);
+  } catch (err) {
+    listEl.innerHTML = `<div class="empty-state">Could not load runs: ${escapeHtml(err.message)}</div>`;
+    return;
+  }
+  if (!Array.isArray(runs) || !runs.length) {
+    listEl.innerHTML = `<div class="empty-state">No test runs yet. Upload a CV above to score it.</div>`;
+    return;
+  }
+  listEl.innerHTML = '';
+  runs.forEach(run => listEl.appendChild(buildDevRunCard(run, jobId)));
+}
+
+// Render the scoring agent's markdown breakdown safely: escape first, then turn
+// leading -/*/• into bullets and **bold** into <strong> (operating on already-
+// escaped text, so it can't inject markup).
+function renderBreakdownMd(text) {
+  return String(text).split(/\r?\n/).map(line => {
+    const t = line.trim();
+    if (!t) return '';
+    const bullet = /^[-*•]\s+/.test(t);
+    const safe = escapeHtml(t.replace(/^[-*•]\s+/, '')).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    return `<div class="dev-param-line${bullet ? ' bullet' : ''}">${safe}</div>`;
+  }).join('');
+}
+
+function buildDevRunCard(run, jobId) {
+  const el = document.createElement('div');
+  el.className = 'dev-run';
+  const status = run.status || 'pending';
+  const name = run.candidate_name || 'Unnamed candidate';
+
+  let rightHtml = '';
+  if (status === 'pending') {
+    rightHtml = `<div class="dev-scoring"><span class="dev-spinner" aria-hidden="true"></span>Scoring…</div>`;
+  } else if (status === 'done') {
+    const score = run.score == null ? '—' : `${run.score}/10`;
+    let pill = '';
+    if (run.passed === true) pill = `<span class="pill pass">Pass</span>`;
+    else if (run.passed === false) pill = `<span class="pill fail">Fail vs threshold ${escapeHtml(String(run.pass_threshold))}</span>`;
+    rightHtml = `<div class="dev-score-wrap"><span class="dev-score">${escapeHtml(String(score))}</span>${pill}</div>`;
+  }
+
+  el.innerHTML = `
+    <div class="dev-run-head">
+      <div class="dev-run-id">
+        <div class="dev-run-name">${escapeHtml(name)}</div>
+        <div class="dev-run-sub"><span class="mono">${escapeHtml(run.cv_filename || '—')}</span> · ${escapeHtml(fmtRelative(run.created_at))}</div>
+      </div>
+      <div class="dev-run-right">
+        ${rightHtml}
+        <button type="button" class="row-delete dev-run-delete" title="Delete run">×</button>
+      </div>
+    </div>
+    <div class="dev-run-body"></div>
+  `;
+
+  const body = el.querySelector('.dev-run-body');
+  if (status === 'error') {
+    body.innerHTML = `<div class="dev-error">${escapeHtml(run.error || 'Scoring failed')}</div>`;
+  } else if (status === 'done') {
+    let html = '';
+    if (run.rationale) html += `<p class="dev-rationale">${escapeHtml(run.rationale)}</p>`;
+    // The scoring agent emits the per-parameter "why" as a markdown string
+    // (parameter_breakdown). Older/array form (parameter_reasoning) still renders.
+    const breakdown = run.parameter_breakdown;
+    const reasoning = Array.isArray(run.parameter_reasoning) ? run.parameter_reasoning : [];
+    if (typeof breakdown === 'string' && breakdown.trim()) {
+      html += `<div class="dev-param-title">Why each parameter</div><div class="dev-param-md">${renderBreakdownMd(breakdown)}</div>`;
+    } else if (reasoning.length) {
+      html += `<div class="dev-param-title">Why each parameter</div><div class="dev-param-list">`;
+      reasoning.forEach(p => {
+        const hasImp = p && p.importance != null && p.importance !== '';
+        const imp = hasImp ? `<span class="dev-imp-chip">${escapeHtml(String(p.importance))}</span>` : '';
+        html += `
+          <div class="dev-param-row">
+            <div class="dev-param-head"><span class="dev-param-name">${escapeHtml((p && p.parameter) || '—')}</span>${imp}</div>
+            ${p && p.note ? `<div class="dev-param-note">${escapeHtml(p.note)}</div>` : ''}
+          </div>`;
+      });
+      html += `</div>`;
+    }
+    body.innerHTML = html;
+  } else {
+    body.style.display = 'none';
+  }
+
+  el.querySelector('.dev-run-delete').addEventListener('click', async () => {
+    try {
+      await api(`/jobs/${jobId}/dev/results/${run.id}`, { method: 'DELETE' });
+      showToast('Run deleted');
+      await loadDevResults(jobId);
+    } catch (err) { showToast(err.message, true); }
+  });
+
+  return el;
+}
+
+// Poll a single run until it leaves 'pending' (~2s cadence, give up after ~60s).
+// Stops itself if the user navigates away from this folder's dev sandbox.
+function pollDevRun(jobId, runId) {
+  const start = Date.now();
+  const interval = setInterval(async () => {
+    const stillHere = state.section === 'screening' && state.view === 'criteria'
+      && state.selected === jobId && document.getElementById('dev-results');
+    if (!stillHere || Date.now() - start > 60000) { clearInterval(interval); return; }
+    try {
+      const run = await api(`/jobs/${jobId}/dev/results/${runId}`);
+      if (run && run.status && run.status !== 'pending') {
+        clearInterval(interval);
+        await loadDevResults(jobId);
+      }
+    } catch { /* transient error — keep polling until the timeout */ }
+  }, 2000);
 }
 
 // Weights are relative importance, not a fixed /10 total. Recompute each row's
