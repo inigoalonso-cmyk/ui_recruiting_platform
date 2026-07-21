@@ -31,6 +31,22 @@ const recruiterFolderListEl = document.getElementById('recruiter-folder-list');
 const jobinfoFolderListEl = document.getElementById('jobinfo-folder-list');
 const toastEl = document.getElementById('toast');
 
+// ---- Folder filter: live-hide non-matching rows in a folder list ----
+function wireFolderFilter(inputId, listEl) {
+  const input = document.getElementById(inputId);
+  if (!input || !listEl) return;
+  input.addEventListener('input', () => {
+    const q = input.value.trim().toLowerCase();
+    listEl.querySelectorAll('.folder-row').forEach(row => {
+      row.style.display = (!q || row.textContent.toLowerCase().includes(q)) ? '' : 'none';
+    });
+    listEl.querySelectorAll('.folder-divider').forEach(d => { d.style.display = q ? 'none' : ''; });
+  });
+}
+wireFolderFilter('folder-filter', folderListEl);
+wireFolderFilter('recruiter-folder-filter', recruiterFolderListEl);
+wireFolderFilter('jobinfo-folder-filter', jobinfoFolderListEl);
+
 function showToast(msg, isError = false) {
   toastEl.textContent = msg;
   toastEl.className = 'toast show' + (isError ? ' error' : '');
