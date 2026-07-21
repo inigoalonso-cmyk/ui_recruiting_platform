@@ -44,62 +44,25 @@ function getRecordingEnabled() {
 }
 
 // ---------- Middleware: protect endpoints called by external workflows (Happy Robot) ----------
-function requireInternalKey(req, res, next) {
-  const configured = process.env.INTERNAL_API_KEY;
+// Each external surface has its OWN api-key env var, deliberately kept separate
+// to limit the blast radius of a leak:
+//   INTERNAL_API_KEY             — scoring + interview writes (most powerful)
+//   JOBBOT_API_KEY               — read-only Job Info for the candidate JobBot
+//   UNANSWERED_QUESTIONS_API_KEY — write-only: enqueue "suggested additions" rows
+//   ASHBY_SYNC_API_KEY           — create/update job folders + facts (Ashby sync)
+// If the matching env var is unset we don't block (dev mode).
+const keyGuard = (envName) => (req, res, next) => {
+  const configured = process.env[envName];
   if (!configured) return next(); // if not configured, we don't block (dev mode)
-  const provided = req.header('x-api-key');
-  if (provided !== configured) {
+  if (req.header('x-api-key') !== configured) {
     return res.status(401).json({ error: 'invalid or missing x-api-key' });
   }
   next();
-}
-
-// Separate, read-only key for the external JobBot API (/jobbot/*). Kept distinct
-// from INTERNAL_API_KEY on purpose: it lives inside a third-party workflow
-// platform, so a leak of this key exposes only read-only job facts — not the
-// general internal key that also guards scoring/interview writes.
-function requireJobbotKey(req, res, next) {
-  const configured = process.env.JOBBOT_API_KEY;
-  if (!configured) return next(); // if not configured, we don't block (dev mode)
-  const provided = req.header('x-api-key');
-  if (provided !== configured) {
-    return res.status(401).json({ error: 'invalid or missing x-api-key' });
-  }
-  next();
-}
-
-// Separate, WRITE-ONLY key for JobBot to report unanswered questions
-// (POST /jobbot/unanswered-questions ONLY). Deliberately its own least-privilege
-// credential: it can create one unanswered-question row and nothing else — it
-// grants no reads (not even Job Info, which is JOBBOT_API_KEY) and none of the
-// scoring/interview writes guarded by INTERNAL_API_KEY. A leak of this key lets
-// an attacker only enqueue junk "suggested additions" rows a recruiter can
-// dismiss — the smallest possible blast radius for this new surface.
-function requireUnansweredKey(req, res, next) {
-  const configured = process.env.UNANSWERED_QUESTIONS_API_KEY;
-  if (!configured) return next(); // if not configured, we don't block (dev mode)
-  const provided = req.header('x-api-key');
-  if (provided !== configured) {
-    return res.status(401).json({ error: 'invalid or missing x-api-key' });
-  }
-  next();
-}
-
-// Dedicated key for the Ashby → dashboard sync (POST /api/sync/ashby-job). Its
-// own credential on purpose: it can create/update job folders and their Job Info
-// facts, so it's more powerful than the read-only JOBBOT key but narrower than
-// INTERNAL_API_KEY (no scoring/interview writes). Lives inside the HappyRobot
-// workflow, so a leak lets an attacker only churn job folders and facts a
-// recruiter can see and fix — not touch candidate scores or interview state.
-function requireSyncKey(req, res, next) {
-  const configured = process.env.ASHBY_SYNC_API_KEY;
-  if (!configured) return next(); // if not configured, we don't block (dev mode)
-  const provided = req.header('x-api-key');
-  if (provided !== configured) {
-    return res.status(401).json({ error: 'invalid or missing x-api-key' });
-  }
-  next();
-}
+};
+const requireInternalKey = keyGuard('INTERNAL_API_KEY');
+const requireJobbotKey = keyGuard('JOBBOT_API_KEY');
+const requireUnansweredKey = keyGuard('UNANSWERED_QUESTIONS_API_KEY');
+const requireSyncKey = keyGuard('ASHBY_SYNC_API_KEY');
 
 // ---------- JOBS (folders) ----------
 // Optional ?mode= filter (normal | development | production) so the prescreening
@@ -134,8 +97,7 @@ router.post('/jobs', (req, res) => {
   if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
   const id = uuid();
   // New manual folders start in 'normal' so the recruiter can set up criteria and
-  // test them in the sandbox before promoting to 'production'. (Folders created by
-  // the Ashby sync keep the DB default 'production' to preserve today's behavior.)
+  // test them in the sandbox before promoting to 'production'.
   db.prepare("INSERT INTO jobs (id, name, ashby_job_id, mode) VALUES (?, ?, ?, 'normal')").run(id, name.trim(), ashby_job_id || null);
   res.status(201).json(db.prepare('SELECT * FROM jobs WHERE id = ?').get(id));
 });
@@ -164,15 +126,10 @@ router.put('/jobs/:id', (req, res) => {
 });
 
 router.delete('/jobs/:id', (req, res) => {
-  // Foreign-key cascade isn't enabled on this connection, so remove the
-  // folder's parameters and killer questions explicitly, in one transaction.
-  const removeJob = db.transaction((jobId) => {
-    db.prepare('DELETE FROM parameters WHERE job_id = ?').run(jobId);
-    db.prepare('DELETE FROM killer_questions WHERE job_id = ?').run(jobId);
-    db.prepare('DELETE FROM job_info_facts WHERE job_id = ?').run(jobId);
-    db.prepare('DELETE FROM jobs WHERE id = ?').run(jobId);
-  });
-  removeJob(req.params.id);
+  // Children (parameters, killer_questions, job_info_facts, dev_test_runs) are
+  // removed automatically by their ON DELETE CASCADE foreign keys — the
+  // foreign_keys pragma is enabled on this connection (see db/index.js).
+  db.prepare('DELETE FROM jobs WHERE id = ?').run(req.params.id);
   res.status(204).end();
 });
 
@@ -1000,6 +957,24 @@ function localJobByAshbyJobId(ashbyJobId) {
   return db.prepare('SELECT * FROM jobs WHERE ashby_job_id = ?').get(ashbyJobId);
 }
 
+// Resolve the local job FOLDER for an Ashby application object. Folders are now
+// one-per-role (location-agnostic): try the legacy real-UUID anchor first, then
+// the canonical role key so an application from ANY country lands on its role folder.
+function localJobForApp(app) {
+  const ashbyJobId = (app && app.job && app.job.id) || (app && app.jobId) || null;
+  let job = localJobByAshbyJobId(ashbyJobId);
+  if (!job) {
+    const rawTitle = (app && app.job && app.job.title) || (app && app.jobTitle) || null;
+    if (rawTitle) {
+      const { canonicalTitle, roleKey } = canonicalizeRole(rawTitle);
+      job =
+        db.prepare('SELECT * FROM jobs WHERE ashby_job_id = ?').get(roleKey) ||
+        db.prepare('SELECT * FROM jobs WHERE LOWER(name) = LOWER(?)').get(canonicalTitle);
+    }
+  }
+  return job || null;
+}
+
 // Resolve the local job for an application: an explicit hint wins, then a value
 // cached from a previous interview interaction, then a live Ashby lookup.
 async function resolveJobIdForApplication(applicationId, hintedJobId) {
@@ -1011,21 +986,7 @@ async function resolveJobIdForApplication(applicationId, hintedJobId) {
   if (state && state.job_id) return state.job_id;
   const info = await ashby.getApplicationInfo(applicationId);
   const app = (info && info.results) || info || {};
-  const ashbyJobId = (app.job && app.job.id) || app.jobId || null;
-  // Legacy: a folder still anchored by a real Ashby UUID (pre role-collapse rows).
-  let job = localJobByAshbyJobId(ashbyJobId);
-  // Role-level match: folders are now one-per-role (location-agnostic), anchored by
-  // a canonical role key. Map this application's job title to that same role so an
-  // application from ANY country resolves to the single role folder.
-  if (!job) {
-    const rawTitle = (app.job && app.job.title) || app.jobTitle || null;
-    if (rawTitle) {
-      const { canonicalTitle, roleKey } = canonicalizeRole(rawTitle);
-      job =
-        db.prepare('SELECT * FROM jobs WHERE ashby_job_id = ?').get(roleKey) ||
-        db.prepare('SELECT * FROM jobs WHERE LOWER(name) = LOWER(?)').get(canonicalTitle);
-    }
-  }
+  const job = localJobForApp(app);
   return job ? job.id : null;
 }
 
@@ -1190,7 +1151,7 @@ router.get('/interview/lookup', requireInternalKey, async (req, res) => {
         const active = app.status ? !['Archived', 'Hired'].includes(app.status) : true;
         if (!inAgentStage || !active) continue;
 
-        const localJob = localJobByAshbyJobId((app.job && app.job.id) || app.jobId);
+        const localJob = localJobForApp(app);
         const questions = localJob
           ? db.prepare('SELECT id, question AS text, weight FROM killer_questions WHERE job_id = ? ORDER BY created_at').all(localJob.id)
           : [];
