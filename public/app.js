@@ -146,6 +146,25 @@ function toggleCollapse(jobId) {
   renderFolderList();
 }
 
+// Drag-and-drop reorganize: move a folder under a role (variant), or out to the
+// top level. Drop target semantics: General -> top level; a variant -> its parent;
+// a top-level folder -> nest under it.
+async function reparentFolder(draggedId, target) {
+  if (!draggedId || (target && draggedId === target.id)) return;
+  let newParent;
+  if (!target || target.general) newParent = null;
+  else if (target.parent_id) newParent = target.parent_id;
+  else newParent = target.id;
+  try {
+    await api(`/jobs/${draggedId}/parent`, { method: 'PUT', body: JSON.stringify({ parent_id: newParent }) });
+    await loadJobs();
+    showToast(newParent ? 'Moved into folder' : 'Moved to top level');
+  } catch (err) {
+    showToast(err.message, true);
+    renderFolderList();
+  }
+}
+
 function buildFolderRow(job, opts = {}) {
   const row = document.createElement('div');
   row.className = 'folder-row' + (opts.child ? ' folder-child' : '') + (state.selected === job.id ? ' active' : '');
@@ -184,6 +203,25 @@ function buildFolderRow(job, opts = {}) {
     items.push({ label: 'Remove', variant: 'danger', onSelect: () => confirmRemoveFolder(job) });
     row.appendChild(RowMenu.createRowMenu(items));
   }
+
+  // Drag a folder to reorganize it: onto a role to nest it (variant), onto
+  // "General" to move it back to the top level. One level of nesting.
+  if (!job.general) {
+    row.draggable = true;
+    row.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', job.id);
+      e.dataTransfer.effectAllowed = 'move';
+      row.classList.add('dragging');
+    });
+    row.addEventListener('dragend', () => row.classList.remove('dragging'));
+  }
+  row.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; row.classList.add('drag-over'); });
+  row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+  row.addEventListener('drop', (e) => {
+    e.preventDefault();
+    row.classList.remove('drag-over');
+    reparentFolder(e.dataTransfer.getData('text/plain'), job);
+  });
   return row;
 }
 

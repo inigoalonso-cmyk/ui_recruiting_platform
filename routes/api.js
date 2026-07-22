@@ -219,6 +219,33 @@ router.put('/jobs/:id', async (req, res) => {
   res.json(await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id));
 });
 
+// Re-parent a folder (drag-and-drop in the sidebar): make it a variant of another
+// folder (parent_id = target) or move it back to the top level (parent_id = null).
+// One level of nesting only.
+router.put('/jobs/:id/parent', async (req, res) => {
+  const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
+  if (!job) return res.status(404).json({ error: 'folder not found' });
+  const raw = req.body ? req.body.parent_id : undefined;
+  const target = (raw === null || raw === undefined || raw === '') ? null : String(raw);
+
+  if (target === null) {
+    await db.prepare('UPDATE jobs SET parent_id = NULL WHERE id = ?').run(job.id);
+    return res.json(await db.prepare('SELECT * FROM jobs WHERE id = ?').get(job.id));
+  }
+  if (target === job.id) return res.status(400).json({ error: 'a folder cannot be its own parent' });
+  const parent = await db.prepare('SELECT * FROM jobs WHERE id = ?').get(target);
+  if (!parent) return res.status(404).json({ error: 'target folder not found' });
+  if (parent.parent_id) return res.status(400).json({ error: 'only one level of nesting — the target is already a variant' });
+  // The folder being moved can't itself have variants (that would be two levels deep).
+  const hasChildren = await db.prepare('SELECT 1 FROM jobs WHERE parent_id = ? LIMIT 1').get(job.id);
+  if (hasChildren) return res.status(400).json({ error: 'this folder has its own variants — move those out first' });
+  // A role folder holding variants stays in Edit, so the target must be in Edit.
+  if (parent.mode !== 'normal') return res.status(409).json({ error: `Set "${parent.name}" to Edit before nesting folders under it.` });
+
+  await db.prepare('UPDATE jobs SET parent_id = ? WHERE id = ?').run(parent.id, job.id);
+  res.json(await db.prepare('SELECT * FROM jobs WHERE id = ?').get(job.id));
+});
+
 router.delete('/jobs/:id', async (req, res) => {
   // Children (parameters, killer_questions, job_info_facts, dev_test_runs) are
   // removed automatically by their ON DELETE CASCADE foreign keys — the

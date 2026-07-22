@@ -241,6 +241,10 @@ body { overflow: hidden; }
 .folder-row.folder-child .folder-tab { font-size: 12px; padding-top: 6px; padding-bottom: 6px; }
 .folder-row.folder-child::before { content: ""; position: absolute; left: 7px; top: 0; bottom: 0; width: 1px; background: var(--line); }
 
+/* Drag-and-drop reorganize */
+.folder-row.dragging { opacity: 0.45; }
+.folder-row.drag-over { box-shadow: inset 0 0 0 1.5px var(--accent); border-radius: var(--radius-sm); }
+
 /* Fixed-width chevron slot at the left of every folder tab, so all dots/names
    align in one column; the glyph only appears on role folders. */
 .folder-chevron { flex: 0 0 auto; width: 12px; margin-right: 4px; text-align: center; font-size: 9px; color: var(--text-faint); cursor: pointer; }
