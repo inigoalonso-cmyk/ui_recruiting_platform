@@ -178,6 +178,12 @@ router.post('/jobs', async (req, res) => {
   // New manual folders start in 'normal' so the recruiter can set up criteria and
   // test them in the sandbox before promoting to 'production'.
   await db.prepare("INSERT INTO jobs (id, name, ashby_job_id, mode, parent_id) VALUES (?, ?, ?, 'normal', ?)").run(id, name.trim(), ashbyId, parentId);
+  // The parent just became a "role folder" (it has a variant). Role folders are
+  // criteria templates that stay in Edit — only their variants go live — so drop
+  // the parent back to 'normal' if a recruiter had left it in development/production.
+  if (parentId) {
+    await db.prepare("UPDATE jobs SET mode = 'normal' WHERE id = ? AND mode != 'normal'").run(parentId);
+  }
   res.status(201).json(await db.prepare('SELECT * FROM jobs WHERE id = ?').get(id));
 });
 
@@ -253,10 +259,13 @@ router.put('/jobs/:id/parent', async (req, res) => {
   // The folder being moved can't itself have variants (that would be two levels deep).
   const hasChildren = await db.prepare('SELECT 1 FROM jobs WHERE parent_id = ? LIMIT 1').get(job.id);
   if (hasChildren) return res.status(400).json({ error: 'this folder has its own variants — move those out first' });
-  // A role folder holding variants stays in Edit, so the target must be in Edit.
-  if (parent.mode !== 'normal') return res.status(409).json({ error: `Set "${parent.name}" to Edit before nesting folders under it.` });
-
   await db.prepare('UPDATE jobs SET parent_id = ? WHERE id = ?').run(parent.id, job.id);
+  // The target now holds a variant, so it becomes a "role folder" — a criteria
+  // template that stays in Edit. Auto-demote it from development/production rather
+  // than blocking the recruiter (mirrors the create-variant flow).
+  if (parent.mode !== 'normal') {
+    await db.prepare("UPDATE jobs SET mode = 'normal' WHERE id = ?").run(parent.id);
+  }
   res.json(await db.prepare('SELECT * FROM jobs WHERE id = ?').get(job.id));
 });
 
