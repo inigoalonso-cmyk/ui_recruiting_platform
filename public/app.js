@@ -8,6 +8,7 @@ const state = {
   recruiterSelected: null, // recruiter_job id, or null when nothing is selected
   settings: null,      // cached app settings (pass threshold, etc.)
   renamingFolderId: null, // job folder currently in inline-rename mode
+  collapsedFolders: new Set(), // role folder ids whose variant subfolders are collapsed in the sidebar
   renamingRecruiterFolderId: null, // recruiter folder in inline-rename mode
   jobInfoSelected: 'general', // 'general' or job.id in the Job Info section
   renamingJobInfoFolderId: null, // job folder being renamed from Job Info
@@ -129,12 +130,20 @@ function renderFolderList() {
     .filter(j => !j.parent_id)
     .sort(byMode)
     .forEach(job => {
-      folderListEl.appendChild(buildFolderRow(job));
-      state.jobs
-        .filter(j => j.parent_id === job.id)
-        .sort(byMode)
-        .forEach(child => folderListEl.appendChild(buildFolderRow(child, { child: true })));
+      const children = state.jobs.filter(j => j.parent_id === job.id).sort(byMode);
+      const collapsed = state.collapsedFolders.has(job.id);
+      folderListEl.appendChild(buildFolderRow(job, { hasChildren: children.length > 0, collapsed }));
+      if (children.length && !collapsed) {
+        children.forEach(child => folderListEl.appendChild(buildFolderRow(child, { child: true })));
+      }
     });
+}
+
+// Collapse/expand a role folder's variant subfolders in the sidebar.
+function toggleCollapse(jobId) {
+  if (state.collapsedFolders.has(jobId)) state.collapsedFolders.delete(jobId);
+  else state.collapsedFolders.add(jobId);
+  renderFolderList();
 }
 
 function buildFolderRow(job, opts = {}) {
@@ -156,6 +165,16 @@ function buildFolderRow(job, opts = {}) {
   btn.className = 'folder-tab' + (job.general ? ' general' : '') + (state.selected === job.id ? ' active' : '');
   btn.innerHTML = `${folderDotHtml(job)}<span class="folder-tab-name">${escapeHtml(job.name)}</span>`;
   btn.onclick = () => selectFolder(job.id);
+  // Collapse/expand toggle for role folders that have variant subfolders.
+  if (opts.hasChildren) {
+    const tog = document.createElement('button');
+    tog.type = 'button';
+    tog.className = 'folder-collapse';
+    tog.textContent = opts.collapsed ? '▸' : '▾';
+    tog.title = opts.collapsed ? 'Expand variants' : 'Collapse variants';
+    tog.onclick = (e) => { e.stopPropagation(); toggleCollapse(job.id); };
+    row.appendChild(tog);
+  }
   row.appendChild(btn);
 
   if (!job.general) {
@@ -353,35 +372,41 @@ async function renderJobView(jobId) {
   const job = state.jobs.find(j => j.id === jobId);
   if (!job) return;
   const mode = job.mode || 'normal';
+  // A folder with variant subfolders is a "role" template: it stays in Edit and
+  // its Ashby jobs are linked on the variants, not here.
+  const hasChildren = state.jobs.some(j => j.parent_id === job.id);
 
   contentEl.innerHTML = `
     <div class="folder-header">
       <div class="folder-header-main">
-        <div class="folder-label">Job folder</div>
+        <div class="folder-label">${hasChildren ? 'Role folder' : (job.parent_id ? 'Variant folder' : 'Job folder')}</div>
         <h1 class="folder-title">${escapeHtml(job.name)}</h1>
       </div>
       <div class="folder-toolbar">
-        ${modeDropdownHtml(mode)}
-        ${mode === 'development' ? '<button type="button" class="btn-secondary testing-btn" id="open-testing" title="Open the testing sandbox">🧪 Testing</button>' : ''}
+        ${hasChildren
+          ? '<span class="mode-static" title="Role folders stay in Edit; set their variants to Development/Production">⚪ Edit · role</span>'
+          : modeDropdownHtml(mode)}
+        ${(!hasChildren && mode === 'development') ? '<button type="button" class="btn-secondary testing-btn" id="open-testing" title="Open the testing sandbox">🧪 Testing</button>' : ''}
       </div>
     </div>
-    ${modeBannerHtml(mode)}
+    ${hasChildren ? '' : modeBannerHtml(mode)}
     <div class="section" id="ashby-link-section">
       <div class="section-heading"><h2>Ashby jobs</h2></div>
-      <div class="section-hint">Link the Ashby job(s) this folder screens — candidates from a linked job are scored with this folder's criteria.${job.parent_id ? ' This is a variant: it also inherits its parent folder’s criteria.' : ''}</div>
-      <div id="ashby-link-mount"></div>
+      ${hasChildren
+        ? '<div class="section-hint">Role folder — link Ashby jobs on its variants, not here.</div>'
+        : '<div id="ashby-link-mount"></div>'}
     </div>
     <div class="section" id="params-section"></div>
     <div class="section" id="killer-section"></div>
   `;
 
-  wireModeDropdown(contentEl, jobId);
+  if (!hasChildren) wireModeDropdown(contentEl, jobId);
   // The Testing sandbox is only reachable while the folder is in Development.
   const openTestingBtn = document.getElementById('open-testing');
   if (openTestingBtn) openTestingBtn.addEventListener('click', () => openTesting(jobId));
 
-  // Ashby job linking picker (Model B) — replaces the old free-text Ashby ID field.
-  if (window.AshbyLink) window.AshbyLink.renderPicker(document.getElementById('ashby-link-mount'), job);
+  // Ashby job linking picker (Model B) — only on leaf folders (roles link via variants).
+  if (!hasChildren && window.AshbyLink) window.AshbyLink.renderPicker(document.getElementById('ashby-link-mount'), job);
 
   const [params, killers] = await Promise.all([
     api(`/jobs/${jobId}/parameters`),
@@ -569,12 +594,14 @@ async function renderTestingSummary(container, jobId) {
     <div class="card testing-against"><div class="empty-state">Loading…</div></div>`;
   const cardEl = container.querySelector('.testing-against');
 
-  let params = [], general = [], killers = [];
+  const job = state.jobs.find(j => j.id === jobId) || {};
+  let params = [], general = [], killers = [], parentParams = [];
   try {
-    [params, general, killers] = await Promise.all([
+    [params, general, killers, parentParams] = await Promise.all([
       api(`/jobs/${jobId}/parameters`),
       api('/jobs/general/parameters').catch(() => []),
       api(`/jobs/${jobId}/killer-questions`),
+      job.parent_id ? api(`/jobs/${job.parent_id}/parameters`).catch(() => []) : Promise.resolve([]),
     ]);
   } catch (err) {
     cardEl.innerHTML = `<div class="empty-state">Could not load criteria: ${escapeHtml(err.message)}</div>`;
@@ -596,6 +623,11 @@ async function renderTestingSummary(container, jobId) {
     ? group('General parameters (all jobs)', `<div class="ta-chips">${general.map(chip).join('')}</div>`)
     : '';
 
+  // Variant folders inherit their parent role's parameters too.
+  const parentHtml = parentParams.length
+    ? group('Inherited from role folder', `<div class="ta-chips">${parentParams.map(chip).join('')}</div>`)
+    : '';
+
   const killersHtml = killers.length
     ? `<div class="ta-killers">${killers.map(k => {
         const pass = k.expected_answer === undefined || k.expected_answer === null ? true : !!k.expected_answer;
@@ -608,6 +640,7 @@ async function renderTestingSummary(container, jobId) {
 
   cardEl.innerHTML =
     group('Evaluation parameters', paramsHtml)
+    + parentHtml
     + generalHtml
     + group('Killer questions', killersHtml);
 }

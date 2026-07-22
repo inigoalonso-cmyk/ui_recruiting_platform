@@ -180,6 +180,12 @@ router.put('/jobs/:id/mode', async (req, res) => {
   // A folder can only go live once it's linked to an Ashby job — otherwise the
   // cron has no Ashby job id to match candidates against. Accept either the new
   // job_ashby_links (Model B) or the legacy jobs.ashby_job_id (until re-linked).
+  // A role folder with variants is a criteria template — it stays in Edit; only
+  // its (leaf) variants go to Development/Production.
+  const hasChildren = await db.prepare('SELECT 1 FROM jobs WHERE parent_id = ? LIMIT 1').get(req.params.id);
+  if (hasChildren && mode !== 'normal') {
+    return res.status(409).json({ error: 'This is a role folder with variants — keep it in Edit and set its variants to Development/Production instead.' });
+  }
   if (mode === 'production') {
     const linked = await db.prepare('SELECT 1 FROM job_ashby_links WHERE job_id = ? LIMIT 1').get(req.params.id);
     if (!linked && !job.ashby_job_id) {

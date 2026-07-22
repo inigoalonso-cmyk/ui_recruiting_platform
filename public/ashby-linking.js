@@ -33,13 +33,17 @@
       return `<option value="${escapeHtml(j.id)}" data-title="${escapeHtml(j.title)}"${taken ? ' disabled' : ''}>${escapeHtml(label)}</option>`;
     }).join('');
 
+    // One Ashby job per folder: only offer the picker when nothing is linked yet.
+    const addHtml = (links && links.length)
+      ? ''
+      : `<div class="ashby-link-add">
+          <select class="ashby-link-select"><option value="">+ Link an Ashby job…</option>${optionsHtml}</select>
+          <button type="button" class="btn-secondary ashby-link-btn">Link</button>
+        </div>`;
     mountEl.innerHTML = `
       <div class="ashby-link-box">
         <div class="ashby-link-current">${currentHtml}</div>
-        <div class="ashby-link-add">
-          <select class="ashby-link-select"><option value="">+ Link an Ashby job…</option>${optionsHtml}</select>
-          <button type="button" class="btn-secondary ashby-link-btn">Link</button>
-        </div>
+        ${addHtml}
       </div>`;
 
     mountEl.querySelectorAll('.ashby-unlink').forEach((b) => b.addEventListener('click', async () => {
@@ -52,7 +56,8 @@
     }));
 
     const sel = mountEl.querySelector('.ashby-link-select');
-    mountEl.querySelector('.ashby-link-btn').addEventListener('click', async () => {
+    const addBtn = mountEl.querySelector('.ashby-link-btn');
+    if (addBtn && sel) addBtn.addEventListener('click', async () => {
       const opt = sel.options[sel.selectedIndex];
       if (!opt || !opt.value) { showToast('Pick an Ashby job first', true); return; }
       try {

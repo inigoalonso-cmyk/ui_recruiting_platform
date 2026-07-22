@@ -241,6 +241,13 @@ body { overflow: hidden; }
 .folder-row.folder-child .folder-tab { font-size: 12.5px; }
 .folder-row.folder-child::before { content: ""; position: absolute; left: 6px; top: 0; bottom: 0; width: 1px; background: var(--line); }
 
+/* Collapse/expand chevron on role folders */
+.folder-collapse { border: none; background: transparent; color: var(--text-faint); cursor: pointer; font-size: 10px; line-height: 1; width: 15px; flex: 0 0 auto; padding: 0; }
+.folder-collapse:hover { color: var(--text); }
+
+/* Static mode label shown on role folders (which stay in Edit) */
+.mode-static { font-size: 12px; color: var(--text-faint); padding: 6px 11px; border: 1px solid var(--line); border-radius: var(--radius-pill); white-space: nowrap; }
+
 /* Ashby linking picker (folder view) */
 .ashby-link-box { display: flex; flex-direction: column; gap: 10px; }
 .ashby-link-current { display: flex; flex-direction: column; gap: 6px; }

@@ -25,6 +25,12 @@ router.post('/jobs/:id/ashby-links', async (req, res) => {
   const ashbyId = String(req.body.ashby_job_id || '').trim();
   if (!ashbyId) return res.status(400).json({ error: 'ashby_job_id is required' });
 
+  // One Ashby job per folder: a folder maps to exactly one Ashby job.
+  const already = await db.prepare('SELECT 1 FROM job_ashby_links WHERE job_id = ? LIMIT 1').get(req.params.id);
+  if (already) {
+    return res.status(409).json({ error: 'This folder is already linked to an Ashby job. Unlink it first to link a different one.' });
+  }
+
   const clash = await db
     .prepare('SELECT l.id, j.name AS folder_name FROM job_ashby_links l JOIN jobs j ON j.id = l.job_id WHERE l.ashby_job_id = ?')
     .get(ashbyId);
