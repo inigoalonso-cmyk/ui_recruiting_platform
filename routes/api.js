@@ -92,6 +92,41 @@ router.get('/jobs/production', async (req, res) => {
   res.json({ job_ids: jobIds, count: jobIds.length });
 });
 
+// ---------- ASHBY (read-only proxy for the folder→Ashby-job linking picker) ----------
+// Lists Ashby jobs (default: Open) so the dashboard can offer a dropdown instead of
+// free-text ids. READ-ONLY — never writes to Ashby. Uses ASHBY_API_KEY (Railway var);
+// Ashby auth is HTTP Basic with the key as username and an empty password.
+router.get('/ashby/jobs', async (req, res) => {
+  const apiKey = process.env.ASHBY_API_KEY;
+  if (!apiKey) return res.status(503).json({ error: 'ASHBY_API_KEY is not configured on the server' });
+  const auth = 'Basic ' + Buffer.from(`${apiKey}:`).toString('base64');
+  // ?status=Open (default) | Closed | Archived. job.list is paginated via a cursor.
+  const status = req.query.status ? [String(req.query.status)] : ['Open'];
+  const jobs = [];
+  let cursor = null;
+  let guard = 0;
+  try {
+    do {
+      const body = cursor ? { status, cursor } : { status };
+      const r = await fetch('https://api.ashbyhq.com/job.list', {
+        method: 'POST',
+        headers: { Authorization: auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await r.json();
+      if (!data || !data.success) {
+        throw new Error((data && data.errors && data.errors[0]) || `Ashby responded ${r.status}`);
+      }
+      for (const j of data.results || []) jobs.push({ id: j.id, title: j.title, status: j.status });
+      cursor = data.moreDataAvailable ? data.nextCursor : null;
+    } while (cursor && ++guard < 20);
+  } catch (err) {
+    return res.status(502).json({ error: `could not reach Ashby: ${err.message}` });
+  }
+  jobs.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+  res.json({ jobs, count: jobs.length });
+});
+
 router.post('/jobs', async (req, res) => {
   const { name, ashby_job_id } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
