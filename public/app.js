@@ -1458,9 +1458,10 @@ function renderJobInfoFolderList() {
   const divider = document.createElement('div');
   divider.className = 'folder-divider';
   jobinfoFolderListEl.appendChild(divider);
-  // Job Info is intentionally NOT mode-ordered and shows no mode dot — the
-  // lifecycle mode belongs to the Screening tab only.
-  state.jobs.forEach(job => jobinfoFolderListEl.appendChild(buildJobInfoFolderRow(job)));
+  // Job Info works at the ROLE level: show only top-level folders, NOT the
+  // Screening variant subfolders (a role's job info is shared by its variants).
+  // No mode dot/order here either — lifecycle mode belongs to the Screening tab.
+  state.jobs.filter(j => !j.parent_id).forEach(job => jobinfoFolderListEl.appendChild(buildJobInfoFolderRow(job)));
 }
 
 // Small inline SVG used as the pinned Company FAQ folder glyph.
