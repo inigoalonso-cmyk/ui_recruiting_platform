@@ -151,7 +151,9 @@ router.post('/jobs/:jobId/parameters', async (req, res) => {
     return res.status(404).json({ error: 'job not found' });
   }
   const w = Number(weight);
-  if (Number.isNaN(w) || w < 0) return res.status(400).json({ error: 'weight must be a non-negative number' });
+  // Match the DB CHECK (0..10) here so an out-of-range weight is a clean 400
+  // instead of surfacing as a 500 from the constraint violation.
+  if (Number.isNaN(w) || w < 0 || w > 10) return res.status(400).json({ error: 'weight must be a number between 0 and 10' });
   const id = uuid();
   await db.prepare('INSERT INTO parameters (id, job_id, name, weight, added_by) VALUES (?, ?, ?, ?, ?)')
     .run(id, jobId, name.trim(), w, added_by || null);
@@ -163,7 +165,7 @@ router.put('/parameters/:id', async (req, res) => {
   const existing = await db.prepare('SELECT * FROM parameters WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'parameter not found' });
   const w = weight !== undefined ? Number(weight) : existing.weight;
-  if (Number.isNaN(w) || w < 0) return res.status(400).json({ error: 'weight must be a non-negative number' });
+  if (Number.isNaN(w) || w < 0 || w > 10) return res.status(400).json({ error: 'weight must be a number between 0 and 10' });
   await db.prepare('UPDATE parameters SET name = COALESCE(?, name), weight = ? WHERE id = ?')
     .run(name || null, w, req.params.id);
   res.json(await db.prepare('SELECT * FROM parameters WHERE id = ?').get(req.params.id));
