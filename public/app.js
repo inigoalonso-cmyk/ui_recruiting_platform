@@ -473,6 +473,12 @@ async function switchMode(jobId, mode) {
   try {
     await api(`/jobs/${jobId}/mode`, { method: 'PUT', body: JSON.stringify({ mode }) });
     await loadJobs();
+    // The Testing sandbox only applies in Development. If we switch this folder
+    // away from Development while on its Testing screen, close it and drop back
+    // to the criteria/parameters view instead of sitting on a locked sandbox.
+    if (mode !== 'development' && state.testingJobId === jobId) {
+      state.testingJobId = null;
+    }
     await renderContent();
     showToast(`Mode set to ${(MODE_META[mode] || {}).label || mode}`);
   } catch (err) { showToast(err.message, true); }
