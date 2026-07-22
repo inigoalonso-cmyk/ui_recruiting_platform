@@ -128,7 +128,7 @@ router.get('/ashby/jobs', async (req, res) => {
 });
 
 router.post('/jobs', async (req, res) => {
-  const { name, ashby_job_id } = req.body;
+  const { name, ashby_job_id, parent_id } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
   // An Ashby job id links this folder to exactly one Ashby job and can only be
   // used once. Check for a clash up front so we return a clear 409 instead of a
@@ -138,10 +138,19 @@ router.post('/jobs', async (req, res) => {
     const clash = await db.prepare('SELECT name FROM jobs WHERE ashby_job_id = ?').get(ashbyId);
     if (clash) return res.status(409).json({ error: `That Ashby job ID is already linked to the folder "${clash.name}". An Ashby ID can only be used once.` });
   }
+  // Optional parent for a "variant" subfolder — one level of nesting only
+  // (a role folder with variants; a variant can't itself have variants).
+  let parentId = null;
+  if (parent_id) {
+    const parent = await db.prepare('SELECT id, parent_id FROM jobs WHERE id = ?').get(parent_id);
+    if (!parent) return res.status(404).json({ error: 'parent folder not found' });
+    if (parent.parent_id) return res.status(400).json({ error: 'only one level of nesting: cannot create a subfolder under a subfolder' });
+    parentId = parent.id;
+  }
   const id = uuid();
   // New manual folders start in 'normal' so the recruiter can set up criteria and
   // test them in the sandbox before promoting to 'production'.
-  await db.prepare("INSERT INTO jobs (id, name, ashby_job_id, mode) VALUES (?, ?, ?, 'normal')").run(id, name.trim(), ashbyId);
+  await db.prepare("INSERT INTO jobs (id, name, ashby_job_id, mode, parent_id) VALUES (?, ?, ?, 'normal', ?)").run(id, name.trim(), ashbyId, parentId);
   res.status(201).json(await db.prepare('SELECT * FROM jobs WHERE id = ?').get(id));
 });
 
@@ -156,9 +165,13 @@ router.put('/jobs/:id/mode', async (req, res) => {
   const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ error: 'job not found' });
   // A folder can only go live once it's linked to an Ashby job — otherwise the
-  // 5-min cron has no Ashby job id to match candidates against.
-  if (mode === 'production' && !job.ashby_job_id) {
-    return res.status(409).json({ error: 'Link an Ashby job ID to this folder before setting it to Production.' });
+  // cron has no Ashby job id to match candidates against. Accept either the new
+  // job_ashby_links (Model B) or the legacy jobs.ashby_job_id (until re-linked).
+  if (mode === 'production') {
+    const linked = await db.prepare('SELECT 1 FROM job_ashby_links WHERE job_id = ? LIMIT 1').get(req.params.id);
+    if (!linked && !job.ashby_job_id) {
+      return res.status(409).json({ error: 'Link an Ashby job to this folder before setting it to Production.' });
+    }
   }
   await db.prepare('UPDATE jobs SET mode = ? WHERE id = ?').run(mode, req.params.id);
   res.json(await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id));
@@ -774,21 +787,32 @@ router.get('/jobs/:jobId/evaluation-config', requireInternalKey, async (req, res
   if (!job) return res.status(404).json({ error: 'job not found' });
 
   const generalParams = await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL').all();
+  // Model B: a variant (child) folder inherits its parent "role" folder's criteria.
+  // For a top-level folder (parent_id NULL) parentParams is empty -> behaviour
+  // identical to before.
+  const parentParams = job.parent_id
+    ? await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ?').all(job.parent_id)
+    : [];
   const jobParams = await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ?').all(job.id);
-  const killerQuestions = await db.prepare('SELECT question, added_by FROM killer_questions WHERE job_id = ?').all(job.id);
+  const parentKillers = job.parent_id
+    ? await db.prepare('SELECT question, added_by FROM killer_questions WHERE job_id = ?').all(job.parent_id)
+    : [];
+  const ownKillers = await db.prepare('SELECT question, added_by FROM killer_questions WHERE job_id = ?').all(job.id);
+  const killerQuestions = [...parentKillers, ...ownKillers];
 
   // Weights are relative importance, not a fixed /10 scale. Normalize each
-  // criterion by the total across all parameters that apply to this job
-  // (general + job-specific) so effective_weight is its proportion of the
-  // final score and the set sums to 1. Consumers should use effective_weight.
-  const weightTotal = [...generalParams, ...jobParams].reduce((sum, p) => sum + p.weight, 0);
+  // criterion by the total across ALL parameters that apply to this folder
+  // (general + parent + own) so effective_weight is its proportion of the final
+  // score and the set sums to 1. Consumers should use effective_weight.
+  const allParams = [...generalParams, ...parentParams, ...jobParams];
+  const weightTotal = allParams.reduce((sum, p) => sum + p.weight, 0);
   const withEffective = (p) => ({
     ...p,
     effective_weight: weightTotal > 0 ? p.weight / weightTotal : 0,
   });
 
   res.json({
-    job: { id: job.id, name: job.name, ashby_job_id: job.ashby_job_id, mode: job.mode },
+    job: { id: job.id, name: job.name, ashby_job_id: job.ashby_job_id, mode: job.mode, parent_id: job.parent_id },
     // Top-level too so the Prescreening workflow can read these directly. It must
     // only score folders whose mode === 'production'; a gate node can branch on
     // is_production (true/false) to skip the rest.
@@ -796,7 +820,11 @@ router.get('/jobs/:jobId/evaluation-config', requireInternalKey, async (req, res
     is_production: job.mode === 'production',
     weight_total: weightTotal,
     general_parameters: generalParams.map(withEffective),
+    parent_parameters: parentParams.map(withEffective),
     job_parameters: jobParams.map(withEffective),
+    // Combined, ready-to-use list (general + parent + own). The rewired workflow
+    // should read this so inheritance is applied without extra logic on its side.
+    parameters: allParams.map(withEffective),
     killer_questions: killerQuestions,
   });
 });
