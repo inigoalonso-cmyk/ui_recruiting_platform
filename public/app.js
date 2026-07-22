@@ -163,17 +163,16 @@ function buildFolderRow(job, opts = {}) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'folder-tab' + (job.general ? ' general' : '') + (state.selected === job.id ? ' active' : '');
-  btn.innerHTML = `${folderDotHtml(job)}<span class="folder-tab-name">${escapeHtml(job.name)}</span>`;
+  // Small inline chevron at the left of a role folder's tab (so the row looks
+  // like any other folder). Clicking just the chevron toggles its variants.
+  const chevron = opts.hasChildren
+    ? `<span class="folder-chevron" title="${opts.collapsed ? 'Expand variants' : 'Collapse variants'}">${opts.collapsed ? '▸' : '▾'}</span>`
+    : '';
+  btn.innerHTML = `${chevron}${folderDotHtml(job)}<span class="folder-tab-name">${escapeHtml(job.name)}</span>`;
   btn.onclick = () => selectFolder(job.id);
-  // Collapse/expand toggle for role folders that have variant subfolders.
   if (opts.hasChildren) {
-    const tog = document.createElement('button');
-    tog.type = 'button';
-    tog.className = 'folder-collapse';
-    tog.textContent = opts.collapsed ? '▸' : '▾';
-    tog.title = opts.collapsed ? 'Expand variants' : 'Collapse variants';
-    tog.onclick = (e) => { e.stopPropagation(); toggleCollapse(job.id); };
-    row.appendChild(tog);
+    const c = btn.querySelector('.folder-chevron');
+    if (c) c.addEventListener('click', (e) => { e.stopPropagation(); toggleCollapse(job.id); });
   }
   row.appendChild(btn);
 
