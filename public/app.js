@@ -122,7 +122,10 @@ function renderFolderList() {
   // "General" is a virtual folder (its params are stored with job_id IS NULL,
   // and it's not a row in the jobs table) — so it can't be renamed or removed.
   folderListEl.appendChild(buildFolderRow({ id: 'general', name: 'General', general: true }));
-  state.jobs.forEach(job => folderListEl.appendChild(buildFolderRow(job)));
+  // Production first, then Development, then Edit (stable within each group).
+  [...state.jobs]
+    .sort((a, b) => modeRank(a) - modeRank(b))
+    .forEach(job => folderListEl.appendChild(buildFolderRow(job)));
 }
 
 function buildFolderRow(job) {
@@ -142,7 +145,7 @@ function buildFolderRow(job) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'folder-tab' + (job.general ? ' general' : '') + (state.selected === job.id ? ' active' : '');
-  btn.innerHTML = `<span>${escapeHtml(job.name)}</span>`;
+  btn.innerHTML = `${folderDotHtml(job)}<span class="folder-tab-name">${escapeHtml(job.name)}</span>`;
   btn.onclick = () => selectFolder(job.id);
   row.appendChild(btn);
 
@@ -392,10 +395,24 @@ async function renderJobView(jobId) {
 // ---- Folder lifecycle mode: dropdown picker + banner + section lock ----
 
 const MODE_META = {
-  normal:      { icon: '⚪', label: 'Normal' },
+  // Internal value stays 'normal' (backend/DB/lock logic unchanged); only the
+  // user-facing label is "Edit" — that's the mode where criteria are editable.
+  normal:      { icon: '⚪', label: 'Edit' },
   development: { icon: '🟠', label: 'Development' },
   production:  { icon: '🟢', label: 'Production' },
 };
+
+// Sidebar sort order: Production folders float to the top, then Development,
+// then Edit (normal). Unknown/missing mode sorts as Edit.
+const MODE_RANK = { production: 0, development: 1, normal: 2 };
+function modeRank(job) {
+  return MODE_RANK[job.mode || 'normal'] ?? 2;
+}
+// The little colored dot shown before a folder name in the sidebar lists.
+function folderDotHtml(job) {
+  if (!job || job.general || job.companyfaq) return ''; // virtual folders have no mode
+  return `<span class="folder-dot mode-${job.mode || 'normal'}" aria-hidden="true"></span>`;
+}
 
 // Per-state app configuration: what each folder lifecycle state enables in the
 // UI. Test screenings ("Run screening") are only allowed in Development —
@@ -444,8 +461,8 @@ function closeTesting() {
 function modeBannerHtml(mode) {
   const text = {
     normal: '⚪ Editing mode — changes are saved but this folder is not being scored. Set it to Development to test, or Production to go live.',
-    development: '🟠 Testing mode — configuration is locked. Switch to Normal to edit criteria.',
-    production: '🟢 Live — this folder is scored automatically every 5 minutes. Switch to Normal to edit.',
+    development: '🟠 Testing mode — configuration is locked. Switch to Edit to change criteria.',
+    production: '🟢 Live — this folder is scored automatically every 5 minutes. Switch to Edit to change it.',
   }[mode] || '';
   return `<div class="mode-banner mode-${mode}">${escapeHtml(text)}</div>`;
 }
@@ -1311,7 +1328,10 @@ function renderJobInfoFolderList() {
   const divider = document.createElement('div');
   divider.className = 'folder-divider';
   jobinfoFolderListEl.appendChild(divider);
-  state.jobs.forEach(job => jobinfoFolderListEl.appendChild(buildJobInfoFolderRow(job)));
+  // Same lifecycle-mode ordering as the Screening sidebar: Production → Development → Edit.
+  [...state.jobs]
+    .sort((a, b) => modeRank(a) - modeRank(b))
+    .forEach(job => jobinfoFolderListEl.appendChild(buildJobInfoFolderRow(job)));
 }
 
 // Small inline SVG used as the pinned Company FAQ folder glyph.
@@ -1337,7 +1357,7 @@ function buildJobInfoFolderRow(job) {
     + (job.general ? ' general' : '')
     + (job.companyfaq ? ' pinned' : '')
     + (state.jobInfoSelected === job.id ? ' active' : '');
-  btn.innerHTML = (job.companyfaq ? FAQ_ICO : '') + `<span>${escapeHtml(job.name)}</span>`;
+  btn.innerHTML = (job.companyfaq ? FAQ_ICO : '') + folderDotHtml(job) + `<span class="folder-tab-name">${escapeHtml(job.name)}</span>`;
   btn.onclick = () => selectJobInfoFolder(job.id);
   row.appendChild(btn);
 

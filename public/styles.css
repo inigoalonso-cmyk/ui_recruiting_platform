@@ -222,6 +222,20 @@ body { overflow: hidden; }
 .folder-tab.general { color: var(--accent); }
 .folder-tab.general.active { color: var(--accent); }
 
+/* Lifecycle-mode dot at the left of each job folder in the sidebar.
+   Neutral gray = Edit (normal), orange = Development, discreet green = Production. */
+.folder-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+.folder-dot.mode-development { background: var(--mode-dev-fg); }
+.folder-dot.mode-production { background: var(--mode-prod-fg); }
+/* Folder name fills the remaining width and truncates, so the dot stays pinned left. */
+.folder-tab-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 /* Folder row = tab + hover ⋯ menu trigger */
 .folder-row { position: relative; display: flex; align-items: center; gap: 2px; }
 .folder-row .folder-tab { flex: 1; width: auto; min-width: 0; }
