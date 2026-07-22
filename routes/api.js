@@ -108,14 +108,27 @@ router.get('/ashby/jobs', async (req, res) => {
   try {
     do {
       const body = cursor ? { status, cursor } : { status };
-      const r = await fetch('https://api.ashbyhq.com/job.list', {
-        method: 'POST',
-        headers: { Authorization: auth, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await r.json();
+      // Retry a couple of times: the connection can prematurely close mid-body.
+      let data;
+      let lastErr = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const r = await fetch('https://api.ashbyhq.com/job.list', {
+            method: 'POST',
+            headers: { Authorization: auth, 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+          });
+          data = await r.json();
+          lastErr = null;
+          break;
+        } catch (e) {
+          lastErr = e;
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      }
+      if (lastErr) throw lastErr;
       if (!data || !data.success) {
-        throw new Error((data && data.errors && data.errors[0]) || `Ashby responded ${r.status}`);
+        throw new Error((data && data.errors && data.errors[0]) || 'Ashby job.list failed');
       }
       for (const j of data.results || []) jobs.push({ id: j.id, title: j.title, status: j.status });
       cursor = data.moreDataAvailable ? data.nextCursor : null;

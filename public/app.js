@@ -122,15 +122,24 @@ function renderFolderList() {
   // "General" is a virtual folder (its params are stored with job_id IS NULL,
   // and it's not a row in the jobs table) — so it can't be renamed or removed.
   folderListEl.appendChild(buildFolderRow({ id: 'general', name: 'General', general: true }));
-  // Production first, then Development, then Edit (stable within each group).
-  [...state.jobs]
-    .sort((a, b) => modeRank(a) - modeRank(b))
-    .forEach(job => folderListEl.appendChild(buildFolderRow(job)));
+  // Top-level "role" folders first (Production > Development > Edit within group),
+  // each immediately followed by its variant subfolders (same ordering, indented).
+  const byMode = (a, b) => modeRank(a) - modeRank(b);
+  state.jobs
+    .filter(j => !j.parent_id)
+    .sort(byMode)
+    .forEach(job => {
+      folderListEl.appendChild(buildFolderRow(job));
+      state.jobs
+        .filter(j => j.parent_id === job.id)
+        .sort(byMode)
+        .forEach(child => folderListEl.appendChild(buildFolderRow(child, { child: true })));
+    });
 }
 
-function buildFolderRow(job) {
+function buildFolderRow(job, opts = {}) {
   const row = document.createElement('div');
-  row.className = 'folder-row' + (state.selected === job.id ? ' active' : '');
+  row.className = 'folder-row' + (opts.child ? ' folder-child' : '') + (state.selected === job.id ? ' active' : '');
 
   // Inline rename mode for a real folder.
   if (!job.general && state.renamingFolderId === job.id) {
@@ -150,10 +159,13 @@ function buildFolderRow(job) {
   row.appendChild(btn);
 
   if (!job.general) {
-    row.appendChild(RowMenu.createRowMenu([
+    const items = [
       { label: 'Rename', onSelect: () => { state.renamingFolderId = job.id; renderFolderList(); } },
-      { label: 'Remove', variant: 'danger', onSelect: () => confirmRemoveFolder(job) },
-    ]));
+    ];
+    // Only top-level role folders can hold variants (one level of nesting).
+    if (!opts.child) items.push({ label: 'Add variant', onSelect: () => window.AshbyLink && window.AshbyLink.createSubfolder(job) });
+    items.push({ label: 'Remove', variant: 'danger', onSelect: () => confirmRemoveFolder(job) });
+    row.appendChild(RowMenu.createRowMenu(items));
   }
   return row;
 }
@@ -354,9 +366,10 @@ async function renderJobView(jobId) {
       </div>
     </div>
     ${modeBannerHtml(mode)}
-    <div class="folder-meta">
-      Ashby ID (job):
-      <input type="text" id="ashby-job-id" value="${escapeHtml(job.ashby_job_id || '')}" placeholder="not linked" />
+    <div class="section" id="ashby-link-section">
+      <div class="section-heading"><h2>Ashby jobs</h2></div>
+      <div class="section-hint">Link the Ashby job(s) this folder screens — candidates from a linked job are scored with this folder's criteria.${job.parent_id ? ' This is a variant: it also inherits its parent folder’s criteria.' : ''}</div>
+      <div id="ashby-link-mount"></div>
     </div>
     <div class="section" id="params-section"></div>
     <div class="section" id="killer-section"></div>
@@ -367,13 +380,8 @@ async function renderJobView(jobId) {
   const openTestingBtn = document.getElementById('open-testing');
   if (openTestingBtn) openTestingBtn.addEventListener('click', () => openTesting(jobId));
 
-  document.getElementById('ashby-job-id').addEventListener('change', async (e) => {
-    try {
-      await api(`/jobs/${jobId}`, { method: 'PUT', body: JSON.stringify({ ashby_job_id: e.target.value.trim() }) });
-      showToast('Ashby ID updated');
-      await loadJobs();
-    } catch (err) { showToast(err.message, true); }
-  });
+  // Ashby job linking picker (Model B) — replaces the old free-text Ashby ID field.
+  if (window.AshbyLink) window.AshbyLink.renderPicker(document.getElementById('ashby-link-mount'), job);
 
   const [params, killers] = await Promise.all([
     api(`/jobs/${jobId}/parameters`),

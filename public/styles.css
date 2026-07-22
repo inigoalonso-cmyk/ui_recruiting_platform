@@ -236,6 +236,23 @@ body { overflow: hidden; }
 /* Folder name fills the remaining width and truncates, so the dot stays pinned left. */
 .folder-tab-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Nested variant subfolders under a role folder */
+.folder-row.folder-child { margin-left: 16px; }
+.folder-row.folder-child .folder-tab { font-size: 12.5px; }
+.folder-row.folder-child::before { content: ""; position: absolute; left: 6px; top: 0; bottom: 0; width: 1px; background: var(--line); }
+
+/* Ashby linking picker (folder view) */
+.ashby-link-box { display: flex; flex-direction: column; gap: 10px; }
+.ashby-link-current { display: flex; flex-direction: column; gap: 6px; }
+.ashby-link-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 10px; background: var(--surface-alt); border-radius: var(--radius-sm); }
+.ashby-link-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ashby-unlink { border: none; background: transparent; color: #e5484d; cursor: pointer; font-size: 12px; }
+.ashby-unlink:hover { text-decoration: underline; }
+.ashby-link-add { display: flex; gap: 8px; }
+.ashby-link-select { flex: 1; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font-family: var(--font-body); font-size: 13px; }
+.ashby-muted { color: var(--text-faint); font-size: 12.5px; }
+.ashby-error { color: #e5484d; font-size: 12.5px; }
+
 /* Folder row = tab + hover ⋯ menu trigger */
 .folder-row { position: relative; display: flex; align-items: center; gap: 2px; }
 .folder-row .folder-tab { flex: 1; width: auto; min-width: 0; }

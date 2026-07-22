@@ -60,6 +60,15 @@ router.get('/ashby/production-job-ids', async (req, res) => {
   res.json({ ashby_job_ids: ids, count: ids.length });
 });
 
+// All links across every folder (ashby_job_id -> folder), so the picker can grey
+// out Ashby jobs already linked elsewhere.
+router.get('/ashby/links', async (req, res) => {
+  const rows = await db
+    .prepare('SELECT l.ashby_job_id, l.job_id, j.name AS folder_name FROM job_ashby_links l JOIN jobs j ON j.id = l.job_id')
+    .all();
+  res.json(rows);
+});
+
 // Resolve an Ashby job id -> the folder that owns it (whose criteria apply).
 router.get('/ashby/resolve/:ashbyJobId', async (req, res) => {
   const row = await db
