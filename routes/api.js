@@ -197,18 +197,20 @@ router.put('/jobs/:id/mode', async (req, res) => {
   }
   const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ error: 'job not found' });
-  // A folder can only go live once it's linked to an Ashby job — otherwise the
-  // cron has no Ashby job id to match candidates against. Accept either the new
-  // job_ashby_links (Model B) or the legacy jobs.ashby_job_id (until re-linked).
   // A role folder with variants is a criteria template — it stays in Edit; only
   // its (leaf) variants go to Development/Production.
   const hasChildren = await db.prepare('SELECT 1 FROM jobs WHERE parent_id = ? LIMIT 1').get(req.params.id);
   if (hasChildren && mode !== 'normal') {
     return res.status(409).json({ error: 'This is a role folder with variants — keep it in Edit and set its variants to Development/Production instead.' });
   }
+  // A folder can only go live once it's linked to a real Ashby job (a Model B
+  // job_ashby_links row) — otherwise the cron has no Ashby job id to match
+  // candidates against. The legacy jobs.ashby_job_id field does NOT count: many
+  // folders carry placeholder slugs there from the old seed, which would let a
+  // truly unlinked folder slip into Production.
   if (mode === 'production') {
     const linked = await db.prepare('SELECT 1 FROM job_ashby_links WHERE job_id = ? LIMIT 1').get(req.params.id);
-    if (!linked && !job.ashby_job_id) {
+    if (!linked) {
       return res.status(409).json({ error: 'Link an Ashby job to this folder before setting it to Production.' });
     }
   }
