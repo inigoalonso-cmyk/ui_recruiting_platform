@@ -247,8 +247,25 @@ body { overflow: hidden; }
 /* The folder list keeps a little empty space at the bottom as a "drop to top level" target */
 .folder-list { min-height: 60px; }
 
-/* Collapsible folders panel — hiding it lets the main content area widen */
+/* Collapsible folders panel — the « button sits in the panel's top-right corner;
+   hiding it lets the main content area widen. A » tab appears to reopen it. */
+.rail-header { position: relative; }
+.rail-collapse-btn { position: absolute; top: 2px; right: 0; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; color: var(--text-faint); cursor: pointer; border-radius: var(--radius-sm); }
+.rail-collapse-btn svg { width: 16px; height: 16px; }
+.rail-collapse-btn:hover { color: var(--text); background: var(--surface-alt); }
+.main { position: relative; }
+.rail-expand-btn { display: none; }
 body.rail-collapsed .rail { display: none; }
+body.rail-collapsed .rail-expand-btn {
+  display: flex; align-items: center; justify-content: center;
+  position: absolute; left: 0; top: 14px; z-index: 30;
+  width: 22px; height: 32px; padding: 0;
+  border: 1px solid var(--line); border-left: none;
+  background: var(--surface); color: var(--text-faint);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0; cursor: pointer;
+}
+.rail-expand-btn svg { width: 15px; height: 15px; }
+body.rail-collapsed .rail-expand-btn:hover { color: var(--text); }
 
 /* Fixed-width chevron slot at the left of every folder tab, so all dots/names
    align in one column; the glyph only appears on role folders. */

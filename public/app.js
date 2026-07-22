@@ -59,15 +59,15 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
 
 // ---- Collapse/expand the folders panel (persisted) so the content area widens ----
 (function () {
-  const btn = document.getElementById('rail-toggle');
-  if (!btn) return;
-  const apply = (collapsed) => { document.body.classList.toggle('rail-collapsed', collapsed); btn.classList.toggle('active', collapsed); };
-  apply(localStorage.getItem('hr-rail-collapsed') === '1');
-  btn.addEventListener('click', () => {
-    const collapsed = !document.body.classList.contains('rail-collapsed');
-    apply(collapsed);
-    try { localStorage.setItem('hr-rail-collapsed', collapsed ? '1' : '0'); } catch (e) {}
-  });
+  const setCollapsed = (c) => {
+    document.body.classList.toggle('rail-collapsed', c);
+    try { localStorage.setItem('hr-rail-collapsed', c ? '1' : '0'); } catch (e) {}
+  };
+  document.body.classList.toggle('rail-collapsed', localStorage.getItem('hr-rail-collapsed') === '1');
+  const collapseBtn = document.getElementById('rail-collapse');
+  const expandBtn = document.getElementById('rail-expand');
+  if (collapseBtn) collapseBtn.addEventListener('click', () => setCollapsed(true));
+  if (expandBtn) expandBtn.addEventListener('click', () => setCollapsed(false));
 })();
 
 // ---- Keyboard: "/" or ⌘/Ctrl+K focuses the visible folder filter ----
