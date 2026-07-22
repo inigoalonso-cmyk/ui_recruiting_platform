@@ -439,16 +439,16 @@ router.delete('/job-info/:id', async (req, res) => {
 // Everything runs in a single transaction so a partial failure leaves no
 // half-synced folder behind.
 router.post('/sync/ashby-job', requireSyncKey, async (req, res) => {
-  const { title, facts } = req.body || {};
+  const { ashby_job_id, title, facts } = req.body || {};
+  const ashbyId = ashby_job_id == null ? '' : String(ashby_job_id).trim();
+  if (!ashbyId) return res.status(400).json({ error: 'ashby_job_id is required' });
   if (!title || !String(title).trim()) {
     return res.status(400).json({ error: 'title is required' });
   }
   if (facts !== undefined && !Array.isArray(facts)) {
     return res.status(400).json({ error: 'facts must be an array of { label, value }' });
   }
-
   const cleanTitle = String(title).trim();
-  const { canonicalTitle, roleKey } = canonicalizeRole(cleanTitle);
 
   // Validate/normalize facts up front so we reject a bad payload before writing.
   const cleanFacts = [];
@@ -465,58 +465,50 @@ router.post('/sync/ashby-job', requireSyncKey, async (req, res) => {
 
   try {
     const result = await db.transaction(async (txDb) => {
-      // 1. Resolve the folder by its canonical role key.
-      let job = await txDb.prepare('SELECT * FROM jobs WHERE ashby_job_id = ?').get(roleKey);
+      // 1. Resolve the folder via the Ashby link (Model B). If this Ashby job is
+      //    already linked, use that folder (may be a variant subfolder). Otherwise
+      //    adopt an existing same-name UNLINKED folder, or create a new top-level
+      //    one — and link it. The recruiter then organizes it / adds criteria.
       let action;
-      if (job) {
+      let job;
+      const link = await txDb.prepare('SELECT * FROM job_ashby_links WHERE ashby_job_id = ?').get(ashbyId);
+      if (link) {
+        job = await txDb.prepare('SELECT * FROM jobs WHERE id = ?').get(link.job_id);
         action = 'updated';
       } else {
-        // Adopt a manually-created folder whose name matches the canonical role and
-        // has no anchor yet (the hand-made folders). Only adopt UNCLAIMED ones so we
-        // never steal a folder already bound to a different role.
         const orphan = await txDb
-          .prepare('SELECT * FROM jobs WHERE LOWER(name) = LOWER(?) AND ashby_job_id IS NULL')
-          .get(canonicalTitle);
+          .prepare('SELECT * FROM jobs WHERE LOWER(name) = LOWER(?) AND id NOT IN (SELECT job_id FROM job_ashby_links) ORDER BY created_at LIMIT 1')
+          .get(cleanTitle);
         if (orphan) {
-          await txDb.prepare('UPDATE jobs SET ashby_job_id = ? WHERE id = ?').run(roleKey, orphan.id);
-          job = await txDb.prepare('SELECT * FROM jobs WHERE id = ?').get(orphan.id);
+          job = orphan;
           action = 'adopted';
         } else {
           const id = uuid();
-          // Sync-created folders start in 'normal' (not scored) until a recruiter
-          // sets them up and promotes them to production.
-          await txDb.prepare("INSERT INTO jobs (id, name, ashby_job_id, mode) VALUES (?, ?, ?, 'normal')").run(id, canonicalTitle, roleKey);
+          await txDb.prepare("INSERT INTO jobs (id, name, mode) VALUES (?, ?, 'normal')").run(id, cleanTitle);
           job = await txDb.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
           action = 'created';
         }
+        await txDb.prepare('INSERT INTO job_ashby_links (id, job_id, ashby_job_id, ashby_job_title) VALUES (?, ?, ?, ?)')
+          .run(uuid(), job.id, ashbyId, cleanTitle);
       }
 
-      // 2. Upsert facts by label (case-insensitive). We never rename the folder on
-      //    update — recruiters may have curated the display name — so `title` only
-      //    matters at create/adopt time.
+      // 2. Fill in ONLY the facts we don't already have (match by label,
+      //    case-insensitive) — never overwrite a fact a recruiter may have edited.
       const existing = await txDb.prepare('SELECT * FROM job_info_facts WHERE job_id = ?').all(job.id);
-      const byLabel = new Map(existing.map((r) => [r.label.toLowerCase(), r]));
+      const seen = new Set(existing.map((r) => r.label.toLowerCase()));
       let maxSort = existing.reduce((m, r) => Math.max(m, r.sort_order), -1);
       let inserted = 0;
-      let updated = 0;
-      let unchanged = 0;
+      let skipped = 0;
       for (const { label, value } of cleanFacts) {
-        const hit = byLabel.get(label.toLowerCase());
-        if (!hit) {
-          maxSort += 1;
-          await txDb.prepare('INSERT INTO job_info_facts (id, job_id, label, value, sort_order) VALUES (?, ?, ?, ?, ?)')
-            .run(uuid(), job.id, label, value, maxSort);
-          inserted += 1;
-        } else if (hit.value !== value) {
-          await txDb.prepare("UPDATE job_info_facts SET value = ?, updated_at = datetime('now') WHERE id = ?")
-            .run(value, hit.id);
-          updated += 1;
-        } else {
-          unchanged += 1;
-        }
+        if (seen.has(label.toLowerCase())) { skipped += 1; continue; }
+        maxSort += 1;
+        await txDb.prepare('INSERT INTO job_info_facts (id, job_id, label, value, sort_order) VALUES (?, ?, ?, ?, ?)')
+          .run(uuid(), job.id, label, value, maxSort);
+        seen.add(label.toLowerCase());
+        inserted += 1;
       }
 
-      return { job, action, role: { key: roleKey, canonical_title: canonicalTitle }, facts: { inserted, updated, unchanged } };
+      return { job: { id: job.id, name: job.name, parent_id: job.parent_id, mode: job.mode }, action, ashby_job_id: ashbyId, facts: { inserted, skipped } };
     });
     res.status(200).json(result);
   } catch (err) {

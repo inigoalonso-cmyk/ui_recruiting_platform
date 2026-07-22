@@ -57,6 +57,27 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
   try { localStorage.setItem('hr-theme', dark ? 'light' : 'dark'); } catch (e) {}
 });
 
+// ---- "Sync from Ashby" button: kick off the extract workflow on demand ----
+(function () {
+  const btn = document.getElementById('ashby-sync-btn');
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    const orig = btn.textContent;
+    btn.textContent = 'Syncing…';
+    try {
+      await api('/ashby/sync-trigger', { method: 'POST' });
+      showToast('Ashby sync started — new jobs and info will appear in a moment.');
+      setTimeout(() => { loadJobs().catch(() => {}); }, 9000);
+    } catch (e) {
+      showToast(e.message || 'Sync failed', true);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = orig;
+    }
+  });
+})();
+
 // ---- Collapse/expand the folders panel (persisted) so the content area widens ----
 (function () {
   const setCollapsed = (c) => {

@@ -247,6 +247,11 @@ body { overflow: hidden; }
 /* The folder list keeps a little empty space at the bottom as a "drop to top level" target */
 .folder-list { min-height: 60px; }
 
+/* "Sync from Ashby" button under the folder list */
+.ashby-sync-btn { width: 100%; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--line); background: var(--surface); color: var(--text-muted); font-family: var(--font-body); font-size: 12.5px; border-radius: var(--radius-sm); cursor: pointer; }
+.ashby-sync-btn:hover:not(:disabled) { color: var(--text); background: var(--surface-alt); }
+.ashby-sync-btn:disabled { opacity: 0.6; cursor: default; }
+
 /* Collapsible folders panel — the « button sits in the panel's top-right corner;
    hiding it lets the main content area widen. A » tab appears to reopen it. */
 .rail-header { position: relative; }
@@ -256,6 +261,8 @@ body { overflow: hidden; }
 .main { position: relative; }
 .rail-expand-btn { display: none; }
 body.rail-collapsed .rail { display: none; }
+/* Drop the (now empty) folders column so the content grid track fills the width. */
+body.rail-collapsed .app { grid-template-columns: 78px 1fr; }
 body.rail-collapsed .rail-expand-btn {
   display: flex; align-items: center; justify-content: center;
   position: absolute; left: 0; top: 14px; z-index: 30;

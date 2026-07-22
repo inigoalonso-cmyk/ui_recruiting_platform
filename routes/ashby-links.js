@@ -84,4 +84,19 @@ router.get('/ashby/resolve/:ashbyJobId', async (req, res) => {
   res.json(row);
 });
 
+// Manually kick off the Ashby extract workflow (the dashboard "Sync from Ashby"
+// button). Fires the workflow's webhook; the workflow then calls back
+// POST /api/sync/ashby-job per Open job to create/fill folders + facts.
+router.post('/ashby/sync-trigger', async (req, res) => {
+  const url = process.env.ASHBY_EXTRACT_TRIGGER_URL
+    || 'https://workflows.platform.happyrobot.ai/hooks/9s1uwfnpe55j';
+  try {
+    const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!r.ok) throw new Error(`trigger responded ${r.status}`);
+    res.json({ ok: true, message: 'Ashby sync started' });
+  } catch (err) {
+    res.status(502).json({ error: `could not start the Ashby sync: ${err.message}` });
+  }
+});
+
 module.exports = router;
