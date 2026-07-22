@@ -476,6 +476,7 @@ router.post('/sync/ashby-job', requireSyncKey, async (req, res) => {
         job = await txDb.prepare('SELECT * FROM jobs WHERE id = ?').get(link.job_id);
         action = 'updated';
       } else {
+        // (a) Adopt an existing same-name UNLINKED folder (the generic role).
         const orphan = await txDb
           .prepare('SELECT * FROM jobs WHERE LOWER(name) = LOWER(?) AND id NOT IN (SELECT job_id FROM job_ashby_links) ORDER BY created_at LIMIT 1')
           .get(cleanTitle);
@@ -483,10 +484,30 @@ router.post('/sync/ashby-job', requireSyncKey, async (req, res) => {
           job = orphan;
           action = 'adopted';
         } else {
+          // (b) Obvious variant: if the title starts with an existing top-level
+          //     role folder's name + a separator, nest it as a variant under that
+          //     role (only Edit-mode roles, to keep the "parent = Edit" invariant).
+          //     Pick the longest (most specific) matching role name.
+          const seps = [' - ', ' — ', ' – ', ', ', ' ('];
+          const tops = await txDb.prepare("SELECT id, name FROM jobs WHERE parent_id IS NULL AND mode = 'normal'").all();
+          const tl = cleanTitle.toLowerCase();
+          let parent = null;
+          for (const f of tops) {
+            const n = (f.name || '').toLowerCase();
+            if (n && tl.length > n.length && seps.some((s) => tl.startsWith(n + s))) {
+              if (!parent || f.name.length > parent.name.length) parent = f;
+            }
+          }
           const id = uuid();
-          await txDb.prepare("INSERT INTO jobs (id, name, mode) VALUES (?, ?, 'normal')").run(id, cleanTitle);
+          if (parent) {
+            await txDb.prepare("INSERT INTO jobs (id, name, mode, parent_id) VALUES (?, ?, 'normal', ?)").run(id, cleanTitle, parent.id);
+            action = 'nested';
+          } else {
+            // (c) No obvious role — create a flat top-level folder.
+            await txDb.prepare("INSERT INTO jobs (id, name, mode) VALUES (?, ?, 'normal')").run(id, cleanTitle);
+            action = 'created';
+          }
           job = await txDb.prepare('SELECT * FROM jobs WHERE id = ?').get(id);
-          action = 'created';
         }
         await txDb.prepare('INSERT INTO job_ashby_links (id, job_id, ashby_job_id, ashby_job_title) VALUES (?, ?, ?, ?)')
           .run(uuid(), job.id, ashbyId, cleanTitle);
