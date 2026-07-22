@@ -163,11 +163,10 @@ function buildFolderRow(job, opts = {}) {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'folder-tab' + (job.general ? ' general' : '') + (state.selected === job.id ? ' active' : '');
-  // Small inline chevron at the left of a role folder's tab (so the row looks
-  // like any other folder). Clicking just the chevron toggles its variants.
-  const chevron = opts.hasChildren
-    ? `<span class="folder-chevron" title="${opts.collapsed ? 'Expand variants' : 'Collapse variants'}">${opts.collapsed ? '▸' : '▾'}</span>`
-    : '';
+  // A fixed-width chevron slot on EVERY row so all folder dots + names line up in
+  // one column; the chevron glyph only shows on role folders (those with variants),
+  // sitting in the reserved space on the left. Clicking just the chevron toggles.
+  const chevron = `<span class="folder-chevron"${opts.hasChildren ? ` title="${opts.collapsed ? 'Expand variants' : 'Collapse variants'}"` : ''}>${opts.hasChildren ? (opts.collapsed ? '▸' : '▾') : ''}</span>`;
   btn.innerHTML = `${chevron}${folderDotHtml(job)}<span class="folder-tab-name">${escapeHtml(job.name)}</span>`;
   btn.onclick = () => selectFolder(job.id);
   if (opts.hasChildren) {
