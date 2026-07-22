@@ -19,10 +19,11 @@
   async function renderPicker(mountEl, job) {
     if (!mountEl) return;
     mountEl.innerHTML = '<div class="ashby-link-box"><div class="ashby-muted">Loading Ashby jobs…</div></div>';
-    let links; let allLinks; let openJobs;
+    let allLinks; let openJobs;
     try {
-      [links, allLinks, openJobs] = await Promise.all([
-        api(`/jobs/${job.id}/ashby-links`),
+      // One /ashby/links call now carries every folder's links, so we derive both
+      // this folder's links and the "linked elsewhere" set from it — no extra fetch.
+      [allLinks, openJobs] = await Promise.all([
         api('/ashby/links'),
         getOpenJobs(),
       ]);
@@ -31,6 +32,7 @@
       return;
     }
 
+    const links = (allLinks || []).filter((l) => l.job_id === job.id);
     const elsewhere = new Map(); // ashby_job_id -> folder name (linked to a DIFFERENT folder)
     (allLinks || []).forEach((l) => { if (l.job_id !== job.id) elsewhere.set(l.ashby_job_id, l.folder_name); });
 

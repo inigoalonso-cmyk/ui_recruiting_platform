@@ -134,6 +134,11 @@ async function copyText(text) {
   } catch { return false; }
 }
 
+// Per-folder cache of a criteria view's params + killer questions, so re-opening a
+// folder repaints instantly (then refreshes in the background). Any write (non-GET)
+// clears it centrally in api() below, so an edit can never show stale data.
+const _jobViewCache = new Map(); // jobId -> { params, killers }
+
 async function api(path, options = {}) {
   const res = await fetch(`/api${path}`, {
     headers: { 'Content-Type': 'application/json' },
@@ -143,6 +148,8 @@ async function api(path, options = {}) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || `Error ${res.status}`);
   }
+  const method = (options.method || 'GET').toUpperCase();
+  if (method !== 'GET') _jobViewCache.clear();
   if (res.status === 204) return null;
   return res.json();
 }
@@ -489,21 +496,34 @@ async function renderJobView(jobId) {
   // Ashby job linking picker (Model B) — only on leaf folders (roles link via variants).
   if (!hasChildren && window.AshbyLink) window.AshbyLink.renderPicker(document.getElementById('ashby-link-mount'), job);
 
-  const [params, killers] = await Promise.all([
+  // Paint the criteria + killer sections. Criteria are only editable in Edit
+  // (normal) mode; in Development / Production they render locked (disabled inputs,
+  // add/remove hidden, dimmed) so a live or under-test folder can't be changed.
+  const paint = (params, killers) => {
+    const pEl = document.getElementById('params-section');
+    const kEl = document.getElementById('killer-section');
+    if (!pEl || !kEl) return; // view changed out from under us
+    renderParamsSection(pEl, params, jobId);
+    renderKillerSection(kEl, killers, jobId);
+    if (mode !== 'normal') { lockSection(pEl); lockSection(kEl); }
+  };
+
+  // Instant repaint from cache if we've seen this folder before…
+  const cached = _jobViewCache.get(jobId);
+  if (cached) paint(cached.params, cached.killers);
+
+  // …then refresh from the server. Detached when we had a cached paint (so
+  // switching folders isn't blocked on the network); awaited on first open so we
+  // don't leave the sections empty. A stale refresh only repaints if this folder
+  // is still the one on screen.
+  const refresh = Promise.all([
     api(`/jobs/${jobId}/parameters`),
     api(`/jobs/${jobId}/killer-questions`),
-  ]);
-
-  renderParamsSection(document.getElementById('params-section'), params, jobId);
-  renderKillerSection(document.getElementById('killer-section'), killers, jobId);
-
-  // Criteria + killer questions are only editable in Normal mode. In
-  // Development / Production the two sections render locked (disabled inputs,
-  // add/remove hidden, dimmed) so a live or under-test folder can't be changed.
-  if (mode !== 'normal') {
-    lockSection(document.getElementById('params-section'));
-    lockSection(document.getElementById('killer-section'));
-  }
+  ]).then(([params, killers]) => {
+    _jobViewCache.set(jobId, { params, killers });
+    if (state.selected === jobId && state.view === 'criteria' && !state.testingJobId) paint(params, killers);
+  }).catch(() => {});
+  if (!cached) await refresh;
 }
 
 // ---- Folder lifecycle mode: dropdown picker + banner + section lock ----
