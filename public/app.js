@@ -1328,10 +1328,9 @@ function renderJobInfoFolderList() {
   const divider = document.createElement('div');
   divider.className = 'folder-divider';
   jobinfoFolderListEl.appendChild(divider);
-  // Same lifecycle-mode ordering as the Screening sidebar: Production → Development → Edit.
-  [...state.jobs]
-    .sort((a, b) => modeRank(a) - modeRank(b))
-    .forEach(job => jobinfoFolderListEl.appendChild(buildJobInfoFolderRow(job)));
+  // Job Info is intentionally NOT mode-ordered and shows no mode dot — the
+  // lifecycle mode belongs to the Screening tab only.
+  state.jobs.forEach(job => jobinfoFolderListEl.appendChild(buildJobInfoFolderRow(job)));
 }
 
 // Small inline SVG used as the pinned Company FAQ folder glyph.
@@ -1357,7 +1356,7 @@ function buildJobInfoFolderRow(job) {
     + (job.general ? ' general' : '')
     + (job.companyfaq ? ' pinned' : '')
     + (state.jobInfoSelected === job.id ? ' active' : '');
-  btn.innerHTML = (job.companyfaq ? FAQ_ICO : '') + folderDotHtml(job) + `<span class="folder-tab-name">${escapeHtml(job.name)}</span>`;
+  btn.innerHTML = (job.companyfaq ? FAQ_ICO : '') + `<span>${escapeHtml(job.name)}</span>`;
   btn.onclick = () => selectJobInfoFolder(job.id);
   row.appendChild(btn);
 
