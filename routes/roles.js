@@ -78,4 +78,4 @@ function canonicalizeRole(rawTitle) {
   return { canonicalTitle: canonical, roleKey: `role:${slug(canonical)}` };
 }
 
-module.exports = { canonicalizeRole, slug };
+module.exports = { canonicalizeRole };

@@ -272,9 +272,11 @@ router.put('/jobs/:id/parent', async (req, res) => {
 });
 
 router.delete('/jobs/:id', async (req, res) => {
-  // Children (parameters, killer_questions, job_info_facts, dev_test_runs) are
-  // removed automatically by their ON DELETE CASCADE foreign keys — the
-  // foreign_keys pragma is enabled on this connection (see db/index.js).
+  // ON DELETE CASCADE removes everything hanging off this folder: its parameters,
+  // killer_questions, job_info_facts, dev_test_runs and job_ashby_links — AND, via
+  // jobs.parent_id, every VARIANT subfolder under it (and their children in turn).
+  // So deleting a role folder deletes all its variants. History tables (score_log,
+  // interview_*) keep their rows (job_id is plain TEXT, no FK) on purpose.
   await db.prepare('DELETE FROM jobs WHERE id = ?').run(req.params.id);
   res.status(204).end();
 });
@@ -436,31 +438,22 @@ router.delete('/job-info/:id', async (req, res) => {
   res.status(204).end();
 });
 
-// ---------- ASHBY SYNC (idempotent upsert, called by the HappyRobot workflow) ----------
-// One-shot endpoint that reflects a single Ashby open role into the dashboard so
-// the workflow doesn't have to orchestrate GET-then-POST-or-PUT itself.
+// ---------- ASHBY SYNC (enrich-only, called by the HappyRobot workflow) ----------
+// One-shot endpoint that enriches an ALREADY-LINKED dashboard folder with facts
+// pulled from a single Ashby job, so the workflow doesn't have to orchestrate the
+// read/merge itself.
 //
-// ROLE-LEVEL, LOCATION-AGNOSTIC: Ashby lists the same role once per country
-// ("Forward Deployed Engineer - SF", "... - Spain", ...). We collapse those into
-// ONE folder per role. The workflow posts each Ashby job as-is (raw title); this
-// endpoint derives the canonical role via canonicalizeRole() and anchors the
-// folder by that role key — so the 10 "Forward Deployed Engineer" postings all
-// land in a single folder. The anchor lives in jobs.ashby_job_id as
-// `role:<slug>` (prefixed so it never collides with a real Ashby UUID). The
-// interview-scoring resolver uses the SAME canonicalization, so an application
-// from any country maps back to this one folder.
-//
-// Given a role's (raw) title + the facts derived from Ashby, it:
-//   1. Resolves the folder by role key; if none, ADOPTS a hand-made folder whose
-//      name matches the canonical title (backfilling its anchor); else creates a
-//      new one named with the canonical title.
-//   2. Upserts the given facts BY LABEL (case-insensitive): updates the value if
-//      it changed, inserts if new. It NEVER deletes — so facts a recruiter added
-//      by hand (and any Ashby fact that later disappears) are preserved. Callers
-//      that want a fact removed must delete it from the dashboard.
-//   3. Touches ONLY Job Info. Screening (parameters / killer questions) is left
-//      untouched — creating the shared `jobs` row simply makes the (empty)
-//      Screening folder appear, which is exactly the intended behavior.
+// ENRICH-ONLY (decided 2026-07-22): this endpoint NEVER creates, adopts, renames,
+// or moves folders. It resolves the target folder purely through the Model B link
+// (job_ashby_links.ashby_job_id → job_id). If the incoming Ashby job isn't linked
+// to any folder, it's skipped — so recruiters stay in control of folder structure
+// and we avoid folder explosion. Given the Ashby job id + facts, it:
+//   1. Resolves the folder via its job_ashby_links row; skips if there is none.
+//   2. Fills in ONLY the facts we don't already have BY LABEL (case-insensitive).
+//      It NEVER overwrites or deletes — so facts a recruiter edited by hand (and
+//      any Ashby fact that later disappears) are preserved.
+//   3. Touches ONLY Job Info; Screening (parameters / killer questions) is left
+//      untouched.
 // Everything runs in a single transaction so a partial failure leaves no
 // half-synced folder behind.
 router.post('/sync/ashby-job', requireSyncKey, async (req, res) => {
@@ -473,7 +466,6 @@ router.post('/sync/ashby-job', requireSyncKey, async (req, res) => {
   if (facts !== undefined && !Array.isArray(facts)) {
     return res.status(400).json({ error: 'facts must be an array of { label, value }' });
   }
-  const cleanTitle = String(title).trim();
 
   // Validate/normalize facts up front so we reject a bad payload before writing.
   const cleanFacts = [];
@@ -490,13 +482,11 @@ router.post('/sync/ashby-job', requireSyncKey, async (req, res) => {
 
   try {
     const result = await db.transaction(async (txDb) => {
-      // 1. Resolve the folder via the Ashby link (Model B). If this Ashby job is
-      //    already linked, use that folder (may be a variant subfolder). Otherwise
-      //    adopt an existing same-name UNLINKED folder, or create a new top-level
-      //    one — and link it. The recruiter then organizes it / adds criteria.
-      // ENRICH-ONLY: never create or adopt folders. Only fill facts on a folder
-      // the recruiter has already linked to this Ashby job (via the picker). If
-      // it's not linked, skip it — no new folders are ever created.
+      // 1. ENRICH-ONLY: never create or adopt folders. Resolve the folder via the
+      //    Ashby link (Model B) and only fill facts on a folder the recruiter has
+      //    already linked to this Ashby job (via the picker). If it's not linked,
+      //    skip it — no new folders are ever created. (`title` is accepted for
+      //    logging/compat but not used to resolve or create anything.)
       const link = await txDb.prepare('SELECT * FROM job_ashby_links WHERE ashby_job_id = ?').get(ashbyId);
       if (!link) {
         return { skipped: true, action: 'skipped', ashby_job_id: ashbyId, note: 'no folder is linked to this Ashby job' };

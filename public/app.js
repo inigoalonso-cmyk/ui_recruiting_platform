@@ -210,6 +210,11 @@ async function reparentFolder(draggedId, target) {
     await api(`/jobs/${draggedId}/parent`, { method: 'PUT', body: JSON.stringify({ parent_id: newParent }) });
     await loadJobs();
     showToast(newParent ? 'Moved into folder' : 'Moved to top level');
+    // The move can change role/mode/inheritance of the dragged folder AND its old
+    // and new parents (e.g. the new parent auto-demotes to Edit and becomes a role
+    // folder), so refresh the content pane — otherwise it shows a stale, now-invalid
+    // header/mode/picker for whichever of those is currently open.
+    if (state.selected) await renderContent();
   } catch (err) {
     showToast(err.message, true);
     renderFolderList();
@@ -514,15 +519,28 @@ async function renderJobView(jobId) {
 
   // …then refresh from the server. Detached when we had a cached paint (so
   // switching folders isn't blocked on the network); awaited on first open so we
-  // don't leave the sections empty. A stale refresh only repaints if this folder
-  // is still the one on screen.
+  // don't leave the sections empty.
   const refresh = Promise.all([
     api(`/jobs/${jobId}/parameters`),
     api(`/jobs/${jobId}/killer-questions`),
   ]).then(([params, killers]) => {
-    _jobViewCache.set(jobId, { params, killers });
-    if (state.selected === jobId && state.view === 'criteria' && !state.testingJobId) paint(params, killers);
-  }).catch(() => {});
+    const fresh = { params, killers };
+    // Only repaint when the data actually differs from what's already on screen.
+    // Writes clear the cache, so a refresh normally matches the instant paint —
+    // repainting anyway would destroy an input the user just started typing into.
+    const changed = !cached || JSON.stringify(fresh) !== JSON.stringify(cached);
+    _jobViewCache.set(jobId, fresh);
+    const stillHere = state.selected === jobId && state.section === 'screening'
+      && state.view === 'criteria' && !state.testingJobId;
+    if (changed && stillHere) paint(params, killers);
+  }).catch(() => {
+    // On a first (uncached) open the sections would otherwise stay blank — show a
+    // hint instead of a silent empty pane.
+    if (!cached) {
+      const pEl = document.getElementById('params-section');
+      if (pEl) pEl.innerHTML = '<div class="section-hint">Could not load criteria — check your connection and reopen the folder.</div>';
+    }
+  });
   if (!cached) await refresh;
 }
 
@@ -633,7 +651,7 @@ function lockSection(container) {
 
 // ---- Development sandbox: upload a CV, run scoring, poll + list results ----
 
-// Compact relative timestamp for dev-run cards (SQLite UTC "YYYY-MM-DD HH:MM:SS").
+// Compact relative timestamp for dev-run cards (timestamps stored as UTC "YYYY-MM-DD HH:MM:SS").
 function fmtRelative(iso) {
   if (!iso) return '—';
   const d = new Date(String(iso).replace(' ', 'T') + 'Z');
@@ -1927,7 +1945,7 @@ function buildSuggestionAddForm(g) {
 
 function fmtDate(iso) {
   if (!iso) return '—';
-  // SQLite datetime('now') returns UTC "YYYY-MM-DD HH:MM:SS".
+  // Timestamps are stored as UTC "YYYY-MM-DD HH:MM:SS".
   const d = new Date(iso.replace(' ', 'T') + 'Z');
   if (isNaN(d)) return iso;
   return d.toLocaleString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
