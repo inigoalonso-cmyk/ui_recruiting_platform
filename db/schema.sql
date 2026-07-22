@@ -14,6 +14,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   created_at TEXT NOT NULL DEFAULT to_char((now() AT TIME ZONE 'utc'), 'YYYY-MM-DD HH24:MI:SS')
 );
 
+-- Hierarchy (Model B): a folder may be a child ("variant") of a parent "role"
+-- folder. parent_id NULL = top-level. Deleting a parent removes its variants,
+-- consistent with "deleting a folder removes everything in it". Additive column
+-- (ADD ... IF NOT EXISTS) so existing rows just get parent_id = NULL.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS parent_id TEXT REFERENCES jobs(id) ON DELETE CASCADE;
+CREATE INDEX IF NOT EXISTS idx_jobs_parent ON jobs (parent_id);
+
 -- job_id = NULL means "general parameter" (applies to all jobs)
 CREATE TABLE IF NOT EXISTS parameters (
   id TEXT PRIMARY KEY,
@@ -155,3 +162,16 @@ CREATE INDEX IF NOT EXISTS idx_dev_test_runs_job ON dev_test_runs (job_id, creat
 -- Unique per Ashby job id, but only for rows that HAVE one (hand-made folders are NULL).
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_ashby_job_id
   ON jobs (ashby_job_id) WHERE ashby_job_id IS NOT NULL;
+
+-- Model B linking: a folder ↔ many Ashby jobs. Each Ashby job id belongs to
+-- exactly ONE folder (UNIQUE), so a candidate's application.jobId resolves to a
+-- single folder. Additive for now (the legacy jobs.ashby_job_id stays until
+-- folders are re-linked via the picker), so nothing existing breaks.
+CREATE TABLE IF NOT EXISTS job_ashby_links (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  ashby_job_id TEXT NOT NULL UNIQUE,
+  ashby_job_title TEXT,
+  created_at TEXT NOT NULL DEFAULT to_char((now() AT TIME ZONE 'utc'), 'YYYY-MM-DD HH24:MI:SS')
+);
+CREATE INDEX IF NOT EXISTS idx_job_ashby_links_job ON job_ashby_links (job_id);
