@@ -814,15 +814,34 @@ async function presentDevRun(r) {
   };
 }
 
+// pdf-parse bundles a very old pdf.js (v1.10.100) whose fake-worker sets up
+// lazily on the first parse of a fresh process; that first call can lose a race
+// and throw "bad XRef entry" even on a perfectly valid PDF, while an immediate
+// retry on the same bytes succeeds (the classic "fails once, then works"). Retry
+// a few times, copying the buffer each attempt because a failed parse can detach
+// the underlying ArrayBuffer, so a cold first run never surfaces to the user.
+async function parsePdfWithRetry(buffer, attempts = 3) {
+  const pdfParse = require('pdf-parse');
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const data = await pdfParse(Buffer.from(buffer));
+      return data.text || '';
+    } catch (err) {
+      lastErr = err;
+      await new Promise((r) => setTimeout(r, 150));
+    }
+  }
+  throw lastErr;
+}
+
 // Convert an uploaded resume document to plain text. The dashboard does this so
 // the workflow receives text directly (no OCR needed). Pure-JS parsers only.
 async function extractCvText(file) {
   const name = (file.originalname || '').toLowerCase();
   const mime = file.mimetype || '';
   if (mime.includes('pdf') || name.endsWith('.pdf')) {
-    const pdfParse = require('pdf-parse');
-    const data = await pdfParse(file.buffer);
-    return data.text || '';
+    return await parsePdfWithRetry(file.buffer);
   }
   if (name.endsWith('.docx') || mime.includes('officedocument.wordprocessingml')) {
     const mammoth = require('mammoth');
