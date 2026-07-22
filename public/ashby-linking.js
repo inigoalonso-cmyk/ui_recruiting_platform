@@ -2,24 +2,35 @@
 // it reuses the globals api(), showToast(), escapeHtml(), loadJobs(), selectFolder().
 // Kept < 500 lines per project rule. Exposes window.AshbyLink.
 (function () {
+  // The Open-Ashby-jobs list is identical for every folder and rarely changes during a
+  // session, so cache it client-side. The picker then opens instantly (no round-trip)
+  // after the first load. AshbyLink.refreshJobs() clears it (e.g. after a Sync).
+  let openJobsCache = null; // { at: epoch_ms, jobs: [...] }
+  const OPEN_JOBS_TTL_MS = 3 * 60 * 1000;
+  async function getOpenJobs() {
+    if (openJobsCache && Date.now() - openJobsCache.at < OPEN_JOBS_TTL_MS) return openJobsCache.jobs;
+    const res = await api('/ashby/jobs');
+    openJobsCache = { at: Date.now(), jobs: (res && res.jobs) || [] };
+    return openJobsCache.jobs;
+  }
+
   // Render the "Ashby jobs" picker for a folder into mountEl: current links (with
   // unlink) + a dropdown of Open Ashby jobs (ones linked elsewhere are greyed).
   async function renderPicker(mountEl, job) {
     if (!mountEl) return;
     mountEl.innerHTML = '<div class="ashby-link-box"><div class="ashby-muted">Loading Ashby jobs…</div></div>';
-    let links; let allLinks; let jobsRes;
+    let links; let allLinks; let openJobs;
     try {
-      [links, allLinks, jobsRes] = await Promise.all([
+      [links, allLinks, openJobs] = await Promise.all([
         api(`/jobs/${job.id}/ashby-links`),
         api('/ashby/links'),
-        api('/ashby/jobs'),
+        getOpenJobs(),
       ]);
     } catch (err) {
       mountEl.innerHTML = `<div class="ashby-link-box"><div class="ashby-error">Could not load Ashby jobs: ${escapeHtml(err.message)}</div></div>`;
       return;
     }
 
-    const openJobs = (jobsRes && jobsRes.jobs) || [];
     const elsewhere = new Map(); // ashby_job_id -> folder name (linked to a DIFFERENT folder)
     (allLinks || []).forEach((l) => { if (l.job_id !== job.id) elsewhere.set(l.ashby_job_id, l.folder_name); });
 
@@ -84,5 +95,5 @@
     } catch (e) { showToast(e.message, true); }
   }
 
-  window.AshbyLink = { renderPicker, createSubfolder };
+  window.AshbyLink = { renderPicker, createSubfolder, refreshJobs: () => { openJobsCache = null; } };
 })();

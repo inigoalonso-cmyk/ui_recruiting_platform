@@ -96,12 +96,25 @@ router.get('/jobs/production', async (req, res) => {
 // Lists Ashby jobs (default: Open) so the dashboard can offer a dropdown instead of
 // free-text ids. READ-ONLY — never writes to Ashby. Uses ASHBY_API_KEY (Railway var);
 // Ashby auth is HTTP Basic with the key as username and an empty password.
+//
+// The Ashby round-trip is ~1.3s and the picker re-fetches on every folder open, so we
+// cache the result per status for a short TTL. Repeated opens are then instant. Pass
+// ?fresh=1 to bypass the cache (e.g. right after creating a job in Ashby).
+const ashbyJobsCache = new Map(); // status -> { at: epoch_ms, jobs: [...] }
+const ASHBY_JOBS_TTL_MS = 3 * 60 * 1000;
 router.get('/ashby/jobs', async (req, res) => {
   const apiKey = process.env.ASHBY_API_KEY;
   if (!apiKey) return res.status(503).json({ error: 'ASHBY_API_KEY is not configured on the server' });
-  const auth = 'Basic ' + Buffer.from(`${apiKey}:`).toString('base64');
   // ?status=Open (default) | Closed | Archived. job.list is paginated via a cursor.
   const status = req.query.status ? [String(req.query.status)] : ['Open'];
+  const cacheKey = status.join(',');
+  if (!req.query.fresh) {
+    const hit = ashbyJobsCache.get(cacheKey);
+    if (hit && Date.now() - hit.at < ASHBY_JOBS_TTL_MS) {
+      return res.json({ jobs: hit.jobs, count: hit.jobs.length, cached: true });
+    }
+  }
+  const auth = 'Basic ' + Buffer.from(`${apiKey}:`).toString('base64');
   const jobs = [];
   let cursor = null;
   let guard = 0;
@@ -137,6 +150,7 @@ router.get('/ashby/jobs', async (req, res) => {
     return res.status(502).json({ error: `could not reach Ashby: ${err.message}` });
   }
   jobs.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+  ashbyJobsCache.set(cacheKey, { at: Date.now(), jobs });
   res.json({ jobs, count: jobs.length });
 });
 

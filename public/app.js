@@ -68,6 +68,7 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
     try {
       await api('/ashby/sync-trigger', { method: 'POST' });
       showToast('Ashby sync started — new jobs and info will appear in a moment.');
+      if (window.AshbyLink && window.AshbyLink.refreshJobs) window.AshbyLink.refreshJobs();
       setTimeout(() => { loadJobs().catch(() => {}); }, 9000);
     } catch (e) {
       showToast(e.message || 'Sync failed', true);
