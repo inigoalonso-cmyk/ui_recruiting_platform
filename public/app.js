@@ -481,7 +481,10 @@ async function switchMode(jobId, mode) {
     }
     await renderContent();
     showToast(`Mode set to ${(MODE_META[mode] || {}).label || mode}`);
-  } catch (err) { showToast(err.message, true); }
+  } catch (err) {
+    showToast(err.message, true);
+    renderContent(); // revert the mode dropdown to the folder's real mode on failure
+  }
 }
 
 // Make a rendered section read-only: disable every control and hide the

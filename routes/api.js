@@ -95,10 +95,18 @@ router.get('/jobs/production', async (req, res) => {
 router.post('/jobs', async (req, res) => {
   const { name, ashby_job_id } = req.body;
   if (!name || !name.trim()) return res.status(400).json({ error: 'name is required' });
+  // An Ashby job id links this folder to exactly one Ashby job and can only be
+  // used once. Check for a clash up front so we return a clear 409 instead of a
+  // raw unique-constraint 500.
+  const ashbyId = ashby_job_id && String(ashby_job_id).trim() ? String(ashby_job_id).trim() : null;
+  if (ashbyId) {
+    const clash = await db.prepare('SELECT name FROM jobs WHERE ashby_job_id = ?').get(ashbyId);
+    if (clash) return res.status(409).json({ error: `That Ashby job ID is already linked to the folder "${clash.name}". An Ashby ID can only be used once.` });
+  }
   const id = uuid();
   // New manual folders start in 'normal' so the recruiter can set up criteria and
   // test them in the sandbox before promoting to 'production'.
-  await db.prepare("INSERT INTO jobs (id, name, ashby_job_id, mode) VALUES (?, ?, ?, 'normal')").run(id, name.trim(), ashby_job_id || null);
+  await db.prepare("INSERT INTO jobs (id, name, ashby_job_id, mode) VALUES (?, ?, ?, 'normal')").run(id, name.trim(), ashbyId);
   res.status(201).json(await db.prepare('SELECT * FROM jobs WHERE id = ?').get(id));
 });
 
@@ -112,6 +120,11 @@ router.put('/jobs/:id/mode', async (req, res) => {
   }
   const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ error: 'job not found' });
+  // A folder can only go live once it's linked to an Ashby job — otherwise the
+  // 5-min cron has no Ashby job id to match candidates against.
+  if (mode === 'production' && !job.ashby_job_id) {
+    return res.status(409).json({ error: 'Link an Ashby job ID to this folder before setting it to Production.' });
+  }
   await db.prepare('UPDATE jobs SET mode = ? WHERE id = ?').run(mode, req.params.id);
   res.json(await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id));
 });
@@ -120,8 +133,22 @@ router.put('/jobs/:id', async (req, res) => {
   const { name, ashby_job_id } = req.body;
   const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id);
   if (!job) return res.status(404).json({ error: 'job not found' });
-  await db.prepare('UPDATE jobs SET name = COALESCE(?, name), ashby_job_id = COALESCE(?, ashby_job_id) WHERE id = ?')
-    .run(name || null, ashby_job_id || null, req.params.id);
+
+  // ashby_job_id semantics: undefined = leave unchanged; '' (or null) = unlink;
+  // a non-empty value = link it, which must be unique across folders.
+  let nextAshby = job.ashby_job_id;
+  if (ashby_job_id !== undefined) {
+    const trimmed = ashby_job_id === null ? '' : String(ashby_job_id).trim();
+    if (trimmed === '') {
+      nextAshby = null;
+    } else {
+      const clash = await db.prepare('SELECT name FROM jobs WHERE ashby_job_id = ? AND id != ?').get(trimmed, req.params.id);
+      if (clash) return res.status(409).json({ error: `That Ashby job ID is already linked to the folder "${clash.name}". An Ashby ID can only be used once.` });
+      nextAshby = trimmed;
+    }
+  }
+  await db.prepare('UPDATE jobs SET name = COALESCE(?, name), ashby_job_id = ? WHERE id = ?')
+    .run(name || null, nextAshby, req.params.id);
   res.json(await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.id));
 });
 
