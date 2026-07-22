@@ -834,9 +834,12 @@ router.get('/jobs/:jobId/evaluation-config', requireInternalKey, async (req, res
     weight_total: weightTotal,
     general_parameters: generalParams.map(withEffective),
     parent_parameters: parentParams.map(withEffective),
-    job_parameters: jobParams.map(withEffective),
-    // Combined, ready-to-use list (general + parent + own). The rewired workflow
-    // should read this so inheritance is applied without extra logic on its side.
+    // job_parameters carries the parent role's params + this folder's own, so the
+    // existing Prescreening workflows (which read job_parameters + general_parameters)
+    // apply the full role+variant inheritance without any workflow change. For a
+    // top-level folder parentParams is empty, so this equals its own params.
+    job_parameters: [...parentParams, ...jobParams].map(withEffective),
+    // Combined, ready-to-use list (general + parent + own).
     parameters: allParams.map(withEffective),
     killer_questions: killerQuestions,
   });
