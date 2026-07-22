@@ -244,6 +244,11 @@ body { overflow: hidden; }
 /* Drag-and-drop reorganize */
 .folder-row.dragging { opacity: 0.45; }
 .folder-row.drag-over { box-shadow: inset 0 0 0 1.5px var(--accent); border-radius: var(--radius-sm); }
+/* The folder list keeps a little empty space at the bottom as a "drop to top level" target */
+.folder-list { min-height: 60px; }
+
+/* Collapsible folders panel — hiding it lets the main content area widen */
+body.rail-collapsed .rail { display: none; }
 
 /* Fixed-width chevron slot at the left of every folder tab, so all dots/names
    align in one column; the glyph only appears on role folders. */

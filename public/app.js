@@ -57,6 +57,19 @@ document.getElementById('theme-toggle').addEventListener('click', () => {
   try { localStorage.setItem('hr-theme', dark ? 'light' : 'dark'); } catch (e) {}
 });
 
+// ---- Collapse/expand the folders panel (persisted) so the content area widens ----
+(function () {
+  const btn = document.getElementById('rail-toggle');
+  if (!btn) return;
+  const apply = (collapsed) => { document.body.classList.toggle('rail-collapsed', collapsed); btn.classList.toggle('active', collapsed); };
+  apply(localStorage.getItem('hr-rail-collapsed') === '1');
+  btn.addEventListener('click', () => {
+    const collapsed = !document.body.classList.contains('rail-collapsed');
+    apply(collapsed);
+    try { localStorage.setItem('hr-rail-collapsed', collapsed ? '1' : '0'); } catch (e) {}
+  });
+})();
+
 // ---- Keyboard: "/" or ⌘/Ctrl+K focuses the visible folder filter ----
 document.addEventListener('keydown', (e) => {
   const tag = (e.target.tagName || '').toLowerCase();
@@ -120,6 +133,15 @@ async function loadJobs() {
 
 function renderFolderList() {
   folderListEl.innerHTML = '';
+  // Drop a folder onto the empty area of the list to move it out to the top level.
+  if (!folderListEl.dataset.dropWired) {
+    folderListEl.dataset.dropWired = '1';
+    folderListEl.addEventListener('dragover', (e) => { e.preventDefault(); });
+    folderListEl.addEventListener('drop', (e) => {
+      e.preventDefault();
+      reparentFolder(e.dataTransfer.getData('text/plain'), null);
+    });
+  }
   // "General" is a virtual folder (its params are stored with job_id IS NULL,
   // and it's not a row in the jobs table) — so it can't be renamed or removed.
   folderListEl.appendChild(buildFolderRow({ id: 'general', name: 'General', general: true }));
@@ -219,6 +241,7 @@ function buildFolderRow(job, opts = {}) {
   row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
   row.addEventListener('drop', (e) => {
     e.preventDefault();
+    e.stopPropagation(); // handled here; don't let the list's "move to top level" also fire
     row.classList.remove('drag-over');
     reparentFolder(e.dataTransfer.getData('text/plain'), job);
   });
