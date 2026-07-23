@@ -91,6 +91,22 @@ async function searchCandidatesByPhone(phone) {
   return (data && data.results) || [];
 }
 
+/**
+ * List applications for ONE job (read-only). ALWAYS scoped to a jobId so a caller
+ * can never accidentally pull the whole pipeline. `status` filters the application
+ * status (Active | Archived | Hired | Lead); omit for all. Returns the raw Ashby
+ * page ({ results, moreDataAvailable, nextCursor }). Works for draft/closed jobs too
+ * (job status is not a filter here).
+ */
+async function listApplications({ jobId, status, cursor, limit } = {}) {
+  if (!jobId) throw new Error('listApplications requires a jobId (safety: never list unscoped)');
+  const body = { jobId };
+  if (status) body.status = status;
+  if (cursor) body.cursor = cursor;
+  if (limit) body.limit = limit;
+  return ashbyRequest('application.list', body);
+}
+
 module.exports = {
   setCustomFieldScore,
   listCustomFields,
@@ -100,4 +116,5 @@ module.exports = {
   listJobs,
   listJobPostings,
   getJobPostingInfo,
+  listApplications,
 };

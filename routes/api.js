@@ -637,6 +637,30 @@ router.get('/ashby/linked-descriptions', requireSyncKey, async (req, res) => {
   }
 });
 
+// ---------- READ-ONLY: list applications for ONE Ashby job (integration Phase 1) ----------
+// Safety: `job_id` is REQUIRED, so this can only ever read a single job's applications
+// (scope it to the test "Football Player" job). This endpoint does NOT write anything to
+// Ashby — it is purely for inspecting who has applied and the real response shape before
+// we build any score/advance/archive step. Optional ?status=Active|Archived|Hired|Lead.
+router.get('/ashby/applications', requireSyncKey, async (req, res) => {
+  const jobId = String(req.query.job_id || '').trim();
+  if (!jobId) return res.status(400).json({ error: 'job_id query param is required' });
+  const status = req.query.status ? String(req.query.status) : undefined;
+  try {
+    const data = await ashby.listApplications({ jobId, status });
+    res.json({
+      job_id: jobId,
+      count: data && data.results ? data.results.length : 0,
+      moreDataAvailable: data && data.moreDataAvailable,
+      nextCursor: data && data.nextCursor,
+      applications: (data && data.results) || [],
+    });
+  } catch (err) {
+    console.error('[ashby/applications] failed:', err);
+    res.status(502).json({ error: 'ashby application.list failed', detail: err.message });
+  }
+});
+
 // ---------- COMPANY FAQ (a.k.a. Global FAQ; company-wide, role-independent) ----------
 // Recruiter-facing label/value facts the JobBot agent can answer for ANY
 // candidate regardless of role (offices, funding, values, interview process…).
