@@ -666,6 +666,11 @@ router.get('/ashby/candidates-to-screen', requireInternalKey, async (req, res) =
   // (status Lead) are NOT auto-screened. Caller can override with ?status= (used
   // only to point the Football Player dry-run test at its Lead test candidates).
   const status = req.query.status ? String(req.query.status) : 'Active';
+  // Idempotency: skip candidates who ALREADY have a score written. Passers stay in
+  // their stage (no stage move by design), so without this they'd be re-screened
+  // every cron cycle forever. Once scored, they drop out of the feed. Failures leave
+  // the feed anyway (they get archived). ?include_scored=1 disables the skip (debug).
+  const includeScored = req.query.include_scored === '1';
   try {
     // Resolve which jobs to scan → [{ ashbyJobId, folderId, folderName }].
     let targets;
@@ -703,7 +708,15 @@ router.get('/ashby/candidates-to-screen', requireInternalKey, async (req, res) =
         };
         try {
           if (candidateId) {
-            const file = await ashby.getResumeBuffer(candidateId);
+            // One candidate.info call: check the existing score AND get the resume handle.
+            const info = await ashby.getCandidateInfo(candidateId);
+            const results = (info && info.results) || {};
+            const scoreField = (results.customFields || []).find((f) => f.id === AI_SCORE_TEST_FIELD_ID);
+            const alreadyScored = scoreField && scoreField.value != null && String(scoreField.value).trim() !== '';
+            if (alreadyScored && !includeScored) {
+              continue; // already screened — don't re-process (idempotency)
+            }
+            const file = await ashby.downloadResume(results.resumeFileHandle);
             if (file) {
               entry.has_resume = true;
               entry.resume_name = file.name;

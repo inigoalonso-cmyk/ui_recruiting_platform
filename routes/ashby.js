@@ -121,12 +121,11 @@ async function listArchiveReasons() {
   return ashbyRequest('archiveReason.list', {});
 }
 
-/** Download a candidate's resume as a Buffer (read-only): candidate.info ->
- *  resumeFileHandle.handle -> file.info (temporary download URL) -> fetch the PDF.
- *  Returns { buffer, name } or null if the candidate has no resume. */
-async function getResumeBuffer(candidateId) {
-  const info = await ashbyRequest('candidate.info', { id: candidateId });
-  const rh = info && info.results && info.results.resumeFileHandle;
+/** Download a resume PDF from an already-fetched resumeFileHandle (read-only):
+ *  file.info (temporary download URL) -> fetch the PDF. Returns { buffer, name }
+ *  or null if the handle is missing. */
+async function downloadResume(resumeFileHandle) {
+  const rh = resumeFileHandle;
   if (!rh || !rh.handle) return null;
   const fileInfo = await ashbyRequest('file.info', { fileHandle: rh.handle });
   const url = fileInfo && fileInfo.results && fileInfo.results.url;
@@ -135,6 +134,14 @@ async function getResumeBuffer(candidateId) {
   if (!resp.ok) throw new Error(`resume download failed: HTTP ${resp.status}`);
   const buffer = Buffer.from(await resp.arrayBuffer());
   return { buffer, name: rh.name };
+}
+
+/** Download a candidate's resume as a Buffer (read-only): candidate.info ->
+ *  resumeFileHandle -> downloadResume. Returns { buffer, name } or null. */
+async function getResumeBuffer(candidateId) {
+  const info = await ashbyRequest('candidate.info', { id: candidateId });
+  const rh = info && info.results && info.results.resumeFileHandle;
+  return downloadResume(rh);
 }
 
 /** Move ONE application to a specific interview stage (advance, or archive when the
@@ -163,4 +170,5 @@ module.exports = {
   changeApplicationStage,
   listArchiveReasons,
   getResumeBuffer,
+  downloadResume,
 };
