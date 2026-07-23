@@ -762,6 +762,14 @@ router.get('/ashby/custom-fields', requireSyncKey, async (req, res) => {
 //     the real Ashby write.
 // This is a throwaway helper to validate the write direction; it is NOT the workflow.
 const AI_SCORE_TEST_FIELD_ID = '6eca71db-7cfe-4e13-ad54-e31bed8c5529'; // Ashby "AI Score Test" (Candidate, String)
+// Prescreen decision (confirmed with Jackson 2026-07-23): pass = score strictly > 8
+// → NO stage movement (candidate stays put). fail = score <= 8 → archive as
+// "Lacks Skills/Qualifications". The archive STAGE is resolved per-application from
+// its own interview plan (this constant is only a last-resort fallback for the
+// Football Player plan); the archive REASON is org-wide.
+const PRESCREEN_PASS_THRESHOLD = 8;
+const ARCHIVE_REASON_LACKS_SKILLS = 'd826e7f7-b796-4280-9c78-6059c260ebee'; // "Lacks Skills/Qualifications" (RejectedByOrg)
+const FALLBACK_ARCHIVED_STAGE_ID = 'e2f91e41-aca6-45bd-bfc1-7c590c4e0ff7'; // Football Player plan "Archived" stage
 router.post('/ashby/test-write-score', requireSyncKey, async (req, res) => {
   const candidateId = String(req.query.candidate_id || (req.body && req.body.candidate_id) || '').trim();
   const score = req.query.score != null ? req.query.score : (req.body && req.body.score);
@@ -851,29 +859,108 @@ router.post('/ashby/test-change-stage', requireSyncKey, async (req, res) => {
 // ONLY thing that then writes to Ashby (score custom field + advance/archive), so all
 // the danger + safety guards live here, in code — never in a workflow node.
 //
-// DRY-RUN by default: unless ASHBY_WRITE_ENABLED === 'true', this only LOGS what it
-// WOULD do and returns — it does NOT touch Ashby. That lets us wire and test the
-// workflow→dashboard connection with zero risk. If someone flips it live before the
-// real writes are built, it refuses (501) rather than do something half-built.
-// Real Ashby writes + the production-mode guard come in Phase 2/3.
+// Body: { score (number, required), candidate_id?, ashby_job_id? } — candidate/job
+// are resolved from the application if not sent. Decision: score > 8 = pass (write
+// score, no stage change); score <= 8 = fail (write score + archive).
+//
+// DOUBLE GUARD before any Ashby write: (1) ASHBY_WRITE_ENABLED === 'true' AND (2) the
+// owning dashboard folder is in production mode. If either is false it's a DRY-RUN —
+// logs the intended plan and returns without touching Ashby. Since only Football
+// Player is ever set to production, no other job can be written even if posted here.
 router.post('/candidates/:appId/prescreen-result', requireInternalKey, async (req, res) => {
   const appId = String(req.params.appId || '');
-  const { score, rationale, passed } = req.body || {};
-  const willAdvance = !!passed;
+  if (!appId) return res.status(400).json({ error: 'appId (application id) is required' });
+  const body = req.body || {};
+  const numScore = Number(body.score);
+  if (!Number.isFinite(numScore)) return res.status(400).json({ error: 'a numeric score is required' });
+
+  const passed = numScore > PRESCREEN_PASS_THRESHOLD;
+
+  // Resolve candidate + job + interview plan from the application itself (single
+  // source of truth; the workflow only has to send the application id + score).
+  let app;
+  try {
+    const info = await ashby.getApplicationInfo(appId);
+    app = (info && info.results) || {};
+  } catch (err) {
+    return res.status(502).json({ error: 'could not resolve application from Ashby', detail: err.message });
+  }
+  const candidateId = body.candidate_id || (app.candidate && app.candidate.id) || null;
+  const ashbyJobId = body.ashby_job_id || (app.job && app.job.id) || app.jobId || null;
+  const planId = (app.currentInterviewStage && app.currentInterviewStage.interviewPlanId) || null;
+
   const plan = {
     application_id: appId,
-    score,
-    rationale_present: rationale != null && String(rationale).length > 0,
-    passed: willAdvance,
-    action: willAdvance ? 'advance-to-next-stage' : 'archive',
+    candidate_id: candidateId,
+    ashby_job_id: ashbyJobId,
+    score: numScore,
+    passed,
+    field: 'AI Score Test',
+    action: passed ? 'write score only (no stage change)' : 'write score + archive (Lacks Skills/Qualifications)',
   };
-  const live = process.env.ASHBY_WRITE_ENABLED === 'true';
-  if (!live) {
-    console.log('[prescreen-result] DRY-RUN (no Ashby write):', JSON.stringify(plan));
-    return res.json({ ok: true, dry_run: true, plan });
+
+  // GUARD 1 — global kill switch. GUARD 2 — the owning dashboard folder must be in
+  // production mode. Both must hold, or this is a DRY-RUN (logs the plan, no Ashby
+  // write). Only Football Player is ever put in production, so nothing else can be
+  // touched even if the workflow posts it.
+  const enabled = process.env.ASHBY_WRITE_ENABLED === 'true';
+  let folder = null;
+  if (ashbyJobId) {
+    folder = await db.prepare(
+      'SELECT j.id, j.name, j.mode FROM job_ashby_links l JOIN jobs j ON j.id = l.job_id WHERE l.ashby_job_id = ?',
+    ).get(ashbyJobId);
   }
-  console.warn('[prescreen-result] LIVE requested but Ashby writes not implemented yet:', JSON.stringify(plan));
-  return res.status(501).json({ ok: false, error: 'live Ashby writes not implemented yet (Phase 2/3)', plan });
+  const isProd = !!folder && folder.mode === 'production';
+
+  if (!enabled || !isProd) {
+    const reason = !enabled ? 'ASHBY_WRITE_ENABLED is not "true"' : 'owning folder is not in production mode';
+    console.log(`[prescreen-result] DRY-RUN (${reason}):`, JSON.stringify(plan));
+    return res.json({
+      ok: true,
+      dry_run: true,
+      reason,
+      folder: folder ? { name: folder.name, mode: folder.mode } : null,
+      plan,
+    });
+  }
+
+  // ---- LIVE writes (production folder + kill switch on) ----
+  const done = { score_written: false, archived: false };
+  try {
+    if (candidateId) {
+      await ashby.setCustomFieldScore({
+        objectId: candidateId,
+        objectType: 'Candidate',
+        fieldId: AI_SCORE_TEST_FIELD_ID,
+        value: String(numScore),
+      });
+      done.score_written = true;
+    }
+    if (!passed) {
+      // Resolve THIS application's own Archived-type stage (correct across jobs/plans).
+      let archivedStageId = FALLBACK_ARCHIVED_STAGE_ID;
+      if (planId) {
+        try {
+          const st = await ashby.listInterviewStages(planId);
+          const archived = ((st && st.results) || []).find((s) => s.type === 'Archived');
+          if (archived && archived.id) archivedStageId = archived.id;
+        } catch (e) {
+          console.warn('[prescreen-result] stage resolve failed, using fallback:', e.message);
+        }
+      }
+      await ashby.changeApplicationStage({
+        applicationId: appId,
+        interviewStageId: archivedStageId,
+        archiveReasonId: ARCHIVE_REASON_LACKS_SKILLS,
+      });
+      done.archived = true;
+    }
+    console.log('[prescreen-result] LIVE write done:', JSON.stringify({ plan, done }));
+    return res.json({ ok: true, dry_run: false, plan, done });
+  } catch (err) {
+    console.error('[prescreen-result] LIVE write failed:', err);
+    return res.status(502).json({ ok: false, error: 'ashby write failed', detail: err.message, plan, done });
+  }
 });
 
 // ---------- COMPANY FAQ (a.k.a. Global FAQ; company-wide, role-independent) ----------
