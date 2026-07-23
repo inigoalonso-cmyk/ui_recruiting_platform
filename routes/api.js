@@ -659,7 +659,8 @@ router.get('/ashby/applications', requireSyncKey, async (req, res) => {
 // Each candidate carries: application_id, candidate_id, name, current stage, the
 // parsed cv_text, the owning folder id (`job_id`, for /jobs/:id/evaluation-config)
 // and the ashby_job_id. Read-only — never writes.
-router.get('/ashby/candidates-to-screen', requireSyncKey, async (req, res) => {
+// Guarded with the INTERNAL key (the one the prescreening workflow already carries).
+router.get('/ashby/candidates-to-screen', requireInternalKey, async (req, res) => {
   const reqJobId = String(req.query.job_id || '').trim();
   // Only screen candidates who APPLIED themselves (status Active). Sourced leads
   // (status Lead) are NOT auto-screened. Caller can override with ?status= (used
