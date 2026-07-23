@@ -103,13 +103,6 @@ router.get('/jobs/production', async (req, res) => {
 const ashbyJobsCache = new Map(); // status -> { at: epoch_ms, jobs: [...] }
 const ASHBY_JOBS_TTL_MS = 3 * 60 * 1000;
 
-// Debug ring buffer: last N /prescreen-result calls (what the workflow actually sent
-// + what we resolved + wrote). Read via GET /ashby/prescreen-debug. Diagnostic only.
-const recentPrescreen = [];
-function recordPrescreen(entry) {
-  recentPrescreen.unshift(entry);
-  if (recentPrescreen.length > 25) recentPrescreen.length = 25;
-}
 router.get('/ashby/jobs', async (req, res) => {
   const apiKey = process.env.ASHBY_API_KEY;
   if (!apiKey) return res.status(503).json({ error: 'ASHBY_API_KEY is not configured on the server' });
@@ -633,30 +626,6 @@ router.get('/ashby/linked-descriptions', requireSyncKey, async (req, res) => {
   }
 });
 
-// ---------- READ-ONLY: list applications for ONE Ashby job (integration Phase 1) ----------
-// Safety: `job_id` is REQUIRED, so this can only ever read a single job's applications
-// (scope it to the test "Football Player" job). This endpoint does NOT write anything to
-// Ashby — it is purely for inspecting who has applied and the real response shape before
-// we build any score/advance/archive step. Optional ?status=Active|Archived|Hired|Lead.
-router.get('/ashby/applications', requireSyncKey, async (req, res) => {
-  const jobId = String(req.query.job_id || '').trim();
-  if (!jobId) return res.status(400).json({ error: 'job_id query param is required' });
-  const status = req.query.status ? String(req.query.status) : undefined;
-  try {
-    const data = await ashby.listApplications({ jobId, status });
-    res.json({
-      job_id: jobId,
-      count: data && data.results ? data.results.length : 0,
-      moreDataAvailable: data && data.moreDataAvailable,
-      nextCursor: data && data.nextCursor,
-      applications: (data && data.results) || [],
-    });
-  } catch (err) {
-    console.error('[ashby/applications] failed:', err);
-    res.status(502).json({ error: 'ashby application.list failed', detail: err.message });
-  }
-});
-
 // ---------- READ-ONLY: candidates to screen, WITH their CV text ----------
 // THE single feed the prescreening workflow reads. Two modes:
 //   * ?job_id=<ashby_job_id>  → that one job (used for the Football Player test).
@@ -754,69 +723,7 @@ router.get('/ashby/candidates-to-screen', requireInternalKey, async (req, res) =
   }
 });
 
-// ---------- READ-ONLY: raw candidate.info (find the resume file handle) ----------
-// So we can see exactly how Ashby exposes the resume/CV (resumeFileHandle, fileHandles…)
-// before building the CV fetch. No writes.
-router.get('/ashby/candidate-raw', requireSyncKey, async (req, res) => {
-  const candidateId = String(req.query.candidate_id || '').trim();
-  if (!candidateId) return res.status(400).json({ error: 'candidate_id query param is required' });
-  try {
-    const data = await ashby.getCandidateInfo(candidateId);
-    res.json(data);
-  } catch (err) {
-    console.error('[ashby/candidate-raw] failed:', err);
-    res.status(502).json({ error: 'ashby candidate.info failed', detail: err.message });
-  }
-});
-
-// ---------- READ-ONLY: fetch + parse a candidate's resume/CV text ----------
-// candidate.info -> resumeFileHandle -> file.info (temp URL) -> download PDF ->
-// pdf-parse. This is the CV text the prescreening AI scores. No writes.
-router.get('/ashby/candidate-cv', requireSyncKey, async (req, res) => {
-  const candidateId = String(req.query.candidate_id || '').trim();
-  if (!candidateId) return res.status(400).json({ error: 'candidate_id query param is required' });
-  try {
-    const file = await ashby.getResumeBuffer(candidateId);
-    if (!file) return res.json({ candidate_id: candidateId, has_resume: false, cv_text: '' });
-    const text = (await parsePdfWithRetry(file.buffer)).trim();
-    res.json({
-      candidate_id: candidateId,
-      has_resume: true,
-      resume_name: file.name,
-      chars: text.length,
-      cv_text_preview: text.slice(0, 400),
-    });
-  } catch (err) {
-    console.error('[ashby/candidate-cv] failed:', err);
-    res.status(502).json({ error: 'ashby resume fetch/parse failed', detail: err.message });
-  }
-});
-
-// ---------- READ-ONLY: list Ashby custom fields (integration Phase 1) ----------
-// To find the id of the "score" custom field the prescreening will write to (and its
-// objectType). No writes — just inspects what fields exist in the Ashby account.
-router.get('/ashby/custom-fields', requireSyncKey, async (req, res) => {
-  try {
-    const data = await ashby.listCustomFields();
-    const results = (data && data.results) || [];
-    res.json({
-      count: results.length,
-      fields: results.map((f) => ({ id: f.id, title: f.title, objectType: f.objectType, fieldType: f.fieldType })),
-    });
-  } catch (err) {
-    console.error('[ashby/custom-fields] failed:', err);
-    res.status(502).json({ error: 'ashby customField.list failed', detail: err.message });
-  }
-});
-
-// ---------- TEST WRITE: set "AI Score Test" on ONE candidate (integration Phase 2) ----------
-// Deliberately locked down so it can only ever do the safe thing:
-//   * the field id is HARDCODED to "AI Score Test" — it can NEVER touch the real
-//     "AI Score" field.
-//   * it writes to exactly ONE candidate (candidate_id is required) — no loop.
-//   * DRY-RUN by default: it just returns the intended write. Only ?live=1 performs
-//     the real Ashby write.
-// This is a throwaway helper to validate the write direction; it is NOT the workflow.
+// ---------- Prescreen scoring constants ----------
 const AI_SCORE_TEST_FIELD_ID = '6eca71db-7cfe-4e13-ad54-e31bed8c5529'; // Ashby "AI Score Test" (Candidate, String)
 // Prescreen decision (confirmed with Jackson 2026-07-23): pass = score strictly > 8
 // → NO stage movement (candidate stays put). fail = score <= 8 → archive as
@@ -826,92 +733,6 @@ const AI_SCORE_TEST_FIELD_ID = '6eca71db-7cfe-4e13-ad54-e31bed8c5529'; // Ashby 
 const PRESCREEN_PASS_THRESHOLD = 8;
 const ARCHIVE_REASON_LACKS_SKILLS = 'd826e7f7-b796-4280-9c78-6059c260ebee'; // "Lacks Skills/Qualifications" (RejectedByOrg)
 const FALLBACK_ARCHIVED_STAGE_ID = 'e2f91e41-aca6-45bd-bfc1-7c590c4e0ff7'; // Football Player plan "Archived" stage
-router.post('/ashby/test-write-score', requireSyncKey, async (req, res) => {
-  const candidateId = String(req.query.candidate_id || (req.body && req.body.candidate_id) || '').trim();
-  const clear = req.query.clear === '1'; // clear the field (set empty) instead of writing a score
-  const score = req.query.score != null ? req.query.score : (req.body && req.body.score);
-  const live = req.query.live === '1';
-  if (!candidateId) return res.status(400).json({ error: 'candidate_id is required' });
-  if (!clear && (score == null || String(score) === '')) return res.status(400).json({ error: 'score is required (or ?clear=1)' });
-
-  const value = clear ? '' : String(score);
-  const plan = {
-    objectType: 'Candidate',
-    objectId: candidateId,
-    fieldId: AI_SCORE_TEST_FIELD_ID,
-    field_title: 'AI Score Test',
-    value,
-    clear,
-  };
-  if (!live) return res.json({ ok: true, dry_run: true, note: 'add &live=1 to actually write', plan });
-
-  try {
-    const r = await ashby.setCustomFieldScore({
-      objectId: candidateId, objectType: 'Candidate', fieldId: AI_SCORE_TEST_FIELD_ID, value,
-    });
-    res.json({ ok: true, dry_run: false, wrote: plan, ashby_success: !!(r && r.success) });
-  } catch (err) {
-    console.error('[ashby/test-write-score] failed:', err);
-    res.status(502).json({ error: 'ashby customField.setValue failed', detail: err.message });
-  }
-});
-
-// ---------- READ-ONLY: list interview stages of a plan (integration Phase 3) ----------
-// To find the "next" stage to advance to and the Archived-type stage. No writes.
-router.get('/ashby/interview-stages', requireSyncKey, async (req, res) => {
-  const planId = String(req.query.plan_id || '').trim();
-  if (!planId) return res.status(400).json({ error: 'plan_id query param is required' });
-  try {
-    const data = await ashby.listInterviewStages(planId);
-    const results = (data && data.results) || [];
-    res.json({
-      count: results.length,
-      stages: results.map((s) => ({ id: s.id, title: s.title, type: s.type, order: s.orderInInterviewPlan })),
-    });
-  } catch (err) {
-    console.error('[ashby/interview-stages] failed:', err);
-    res.status(502).json({ error: 'ashby interviewStage.list failed', detail: err.message });
-  }
-});
-
-// ---------- READ-ONLY: list archive reasons (integration Phase 3) ----------
-// To pick an archiveReasonId for the "did not pass -> archive" path. No writes.
-router.get('/ashby/archive-reasons', requireSyncKey, async (req, res) => {
-  try {
-    const data = await ashby.listArchiveReasons();
-    const results = (data && data.results) || [];
-    res.json({
-      count: results.length,
-      reasons: results.map((r) => ({ id: r.id, text: r.text || r.title, reasonType: r.reasonType })),
-    });
-  } catch (err) {
-    console.error('[ashby/archive-reasons] failed:', err);
-    res.status(502).json({ error: 'ashby archiveReason.list failed', detail: err.message });
-  }
-});
-
-// ---------- TEST: move ONE application's stage (advance or archive) (Phase 3) ----------
-// Locked down: writes to exactly ONE application_id, to the stage_id you pass
-// explicitly, and DRY-RUN unless ?live=1. For archiving (target is an Archived-type
-// stage) pass &archive_reason_id=. Reversible — you can move it back. Not the workflow.
-router.post('/ashby/test-change-stage', requireSyncKey, async (req, res) => {
-  const applicationId = String(req.query.application_id || '').trim();
-  const stageId = String(req.query.stage_id || '').trim();
-  const archiveReasonId = req.query.archive_reason_id ? String(req.query.archive_reason_id) : undefined;
-  const live = req.query.live === '1';
-  if (!applicationId || !stageId) {
-    return res.status(400).json({ error: 'application_id and stage_id are required' });
-  }
-  const plan = { applicationId, interviewStageId: stageId, archiveReasonId: archiveReasonId || null };
-  if (!live) return res.json({ ok: true, dry_run: true, note: 'add &live=1 to actually move', plan });
-  try {
-    const r = await ashby.changeApplicationStage({ applicationId, interviewStageId: stageId, archiveReasonId });
-    res.json({ ok: true, dry_run: false, moved: plan, ashby_success: !!(r && r.success) });
-  } catch (err) {
-    console.error('[ashby/test-change-stage] failed:', err);
-    res.status(502).json({ error: 'ashby application.changeStage failed', detail: err.message });
-  }
-});
 
 // ---------- PRESCREEN RESULT SINK (called by the prescreening workflow) ----------
 // The workflow POSTs each candidate's score + pass/fail here. The DASHBOARD is the
@@ -974,7 +795,6 @@ router.post('/candidates/:appId/prescreen-result', requireInternalKey, async (re
   if (!enabled || !isProd) {
     const reason = !enabled ? 'ASHBY_WRITE_ENABLED is not "true"' : 'owning folder is not in production mode';
     console.log(`[prescreen-result] DRY-RUN (${reason}):`, JSON.stringify(plan));
-    recordPrescreen({ mode: 'dry_run', reason, raw_body: body, resolved_candidate_id: candidateId, plan });
     return res.json({
       ok: true,
       dry_run: true,
@@ -1016,18 +836,11 @@ router.post('/candidates/:appId/prescreen-result', requireInternalKey, async (re
       done.archived = true;
     }
     console.log('[prescreen-result] LIVE write done:', JSON.stringify({ plan, done }));
-    recordPrescreen({ mode: 'live', raw_body: body, resolved_candidate_id: candidateId, value_written: String(numScore), plan, done });
     return res.json({ ok: true, dry_run: false, plan, done });
   } catch (err) {
     console.error('[prescreen-result] LIVE write failed:', err);
-    recordPrescreen({ mode: 'live_error', raw_body: body, resolved_candidate_id: candidateId, error: err.message, plan, done });
     return res.status(502).json({ ok: false, error: 'ashby write failed', detail: err.message, plan, done });
   }
-});
-
-// ---------- DEBUG: last /prescreen-result calls (diagnostic only) ----------
-router.get('/ashby/prescreen-debug', requireInternalKey, (req, res) => {
-  res.json({ count: recentPrescreen.length, calls: recentPrescreen });
 });
 
 // ---------- COMPANY FAQ (a.k.a. Global FAQ; company-wide, role-independent) ----------

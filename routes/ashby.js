@@ -39,10 +39,6 @@ async function setCustomFieldScore({ objectId, objectType, fieldId, value }) {
   });
 }
 
-async function listCustomFields() {
-  return ashbyRequest('customField.list', {});
-}
-
 async function getCandidateInfo(candidateId) {
   return ashbyRequest('candidate.info', { id: candidateId });
 }
@@ -115,12 +111,6 @@ async function listInterviewStages(interviewPlanId) {
   return ashbyRequest('interviewStage.list', { interviewPlanId });
 }
 
-/** List the org's archive reasons (read-only). Each has { id, text, ... }. Needed as
- *  archiveReasonId when moving an application to the Archived stage. */
-async function listArchiveReasons() {
-  return ashbyRequest('archiveReason.list', {});
-}
-
 /** Download a resume PDF from an already-fetched resumeFileHandle (read-only):
  *  file.info (temporary download URL) -> fetch the PDF. Returns { buffer, name }
  *  or null if the handle is missing. */
@@ -134,14 +124,6 @@ async function downloadResume(resumeFileHandle) {
   if (!resp.ok) throw new Error(`resume download failed: HTTP ${resp.status}`);
   const buffer = Buffer.from(await resp.arrayBuffer());
   return { buffer, name: rh.name };
-}
-
-/** Download a candidate's resume as a Buffer (read-only): candidate.info ->
- *  resumeFileHandle -> downloadResume. Returns { buffer, name } or null. */
-async function getResumeBuffer(candidateId) {
-  const info = await ashbyRequest('candidate.info', { id: candidateId });
-  const rh = info && info.results && info.results.resumeFileHandle;
-  return downloadResume(rh);
 }
 
 /** Move ONE application to a specific interview stage (advance, or archive when the
@@ -158,7 +140,6 @@ async function changeApplicationStage({ applicationId, interviewStageId, archive
 
 module.exports = {
   setCustomFieldScore,
-  listCustomFields,
   getCandidateInfo,
   getApplicationInfo,
   searchCandidatesByPhone,
@@ -168,7 +149,5 @@ module.exports = {
   listApplications,
   listInterviewStages,
   changeApplicationStage,
-  listArchiveReasons,
-  getResumeBuffer,
   downloadResume,
 };
