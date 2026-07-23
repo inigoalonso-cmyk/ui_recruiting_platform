@@ -102,6 +102,14 @@ router.get('/jobs/production', async (req, res) => {
 // ?fresh=1 to bypass the cache (e.g. right after creating a job in Ashby).
 const ashbyJobsCache = new Map(); // status -> { at: epoch_ms, jobs: [...] }
 const ASHBY_JOBS_TTL_MS = 3 * 60 * 1000;
+
+// Debug ring buffer: last N /prescreen-result calls (what the workflow actually sent
+// + what we resolved + wrote). Read via GET /ashby/prescreen-debug. Diagnostic only.
+const recentPrescreen = [];
+function recordPrescreen(entry) {
+  recentPrescreen.unshift(entry);
+  if (recentPrescreen.length > 25) recentPrescreen.length = 25;
+}
 router.get('/ashby/jobs', async (req, res) => {
   const apiKey = process.env.ASHBY_API_KEY;
   if (!apiKey) return res.status(503).json({ error: 'ASHBY_API_KEY is not configured on the server' });
@@ -959,6 +967,7 @@ router.post('/candidates/:appId/prescreen-result', requireInternalKey, async (re
   if (!enabled || !isProd) {
     const reason = !enabled ? 'ASHBY_WRITE_ENABLED is not "true"' : 'owning folder is not in production mode';
     console.log(`[prescreen-result] DRY-RUN (${reason}):`, JSON.stringify(plan));
+    recordPrescreen({ mode: 'dry_run', reason, raw_body: body, resolved_candidate_id: candidateId, plan });
     return res.json({
       ok: true,
       dry_run: true,
@@ -1000,11 +1009,18 @@ router.post('/candidates/:appId/prescreen-result', requireInternalKey, async (re
       done.archived = true;
     }
     console.log('[prescreen-result] LIVE write done:', JSON.stringify({ plan, done }));
+    recordPrescreen({ mode: 'live', raw_body: body, resolved_candidate_id: candidateId, value_written: String(numScore), plan, done });
     return res.json({ ok: true, dry_run: false, plan, done });
   } catch (err) {
     console.error('[prescreen-result] LIVE write failed:', err);
+    recordPrescreen({ mode: 'live_error', raw_body: body, resolved_candidate_id: candidateId, error: err.message, plan, done });
     return res.status(502).json({ ok: false, error: 'ashby write failed', detail: err.message, plan, done });
   }
+});
+
+// ---------- DEBUG: last /prescreen-result calls (diagnostic only) ----------
+router.get('/ashby/prescreen-debug', requireInternalKey, (req, res) => {
+  res.json({ count: recentPrescreen.length, calls: recentPrescreen });
 });
 
 // ---------- COMPANY FAQ (a.k.a. Global FAQ; company-wide, role-independent) ----------
