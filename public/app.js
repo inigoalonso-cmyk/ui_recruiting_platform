@@ -242,7 +242,7 @@ function buildFolderRow(job, opts = {}) {
   // one column; the chevron glyph only shows on role folders (those with variants),
   // sitting in the reserved space on the left. Clicking just the chevron toggles.
   const chevron = `<span class="folder-chevron"${opts.hasChildren ? ` title="${opts.collapsed ? 'Expand variants' : 'Collapse variants'}"` : ''}>${opts.hasChildren ? (opts.collapsed ? '▸' : '▾') : ''}</span>`;
-  btn.innerHTML = `${chevron}${folderDotHtml(job)}<span class="folder-tab-name">${escapeHtml(job.name)}</span>`;
+  btn.innerHTML = `${chevron}${folderDotHtml(job, opts.hasChildren)}<span class="folder-tab-name">${escapeHtml(job.name)}</span>`;
   btn.onclick = () => selectFolder(job.id);
   if (opts.hasChildren) {
     const c = btn.querySelector('.folder-chevron');
@@ -560,10 +560,20 @@ const MODE_RANK = { production: 0, development: 1, normal: 2 };
 function modeRank(job) {
   return MODE_RANK[job.mode || 'normal'] ?? 2;
 }
-// The little colored dot shown before a folder name in the sidebar lists.
-function folderDotHtml(job) {
+// The marker shown before a folder name in the sidebar lists. Parent folders
+// (a job that has variant subfolders) get a folder icon; every other row keeps
+// the little colored dot. Either way the color encodes the lifecycle mode
+// (gray=Edit, orange=Dev, green=Prod).
+function folderDotHtml(job, hasChildren) {
   if (!job || job.general || job.companyfaq) return ''; // virtual folders have no mode
-  return `<span class="folder-dot mode-${job.mode || 'normal'}" aria-hidden="true"></span>`;
+  const cls = `folder-dot mode-${job.mode || 'normal'}`;
+  if (hasChildren) {
+    return `<span class="${cls} is-folder" aria-hidden="true">`
+      + `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor">`
+      + `<path d="M1.75 3.5c0-.55.45-1 1-1h3.09c.3 0 .58.13.77.36l.74.89c.19.23.47.36.77.36h5.33c.55 0 1 .45 1 1v7.03c0 .55-.45 1-1 1H2.75c-.55 0-1-.45-1-1z"/>`
+      + `</svg></span>`;
+  }
+  return `<span class="${cls}" aria-hidden="true"></span>`;
 }
 
 // Per-state app configuration: what each folder lifecycle state enables in the
@@ -993,7 +1003,7 @@ function renderParamsSection(container, params, scopeId) {
       <div id="param-rows"></div>
       <form class="add-row-form" id="add-param-form">
         <input type="text" name="name" placeholder="Parameter name (e.g. years of experience)" required />
-        <input type="number" name="weight" class="weight-field" min="0" step="any" placeholder="importance" required />
+        <input type="number" name="weight" class="weight-field" min="0" max="10" step="1" placeholder="importance /10" required />
         <input type="text" name="added_by" placeholder="added by" />
         <button type="submit" title="Add">+</button>
       </form>
@@ -1012,7 +1022,7 @@ function renderParamsSection(container, params, scopeId) {
     e.preventDefault();
     const form = e.target;
     const name = form.name.value.trim();
-    const weight = Number(form.weight.value);
+    const weight = Math.min(10, Math.max(0, Math.round(Number(form.weight.value) || 0)));
     const added_by = form.added_by.value.trim();
     if (!name) return;
     try {
@@ -1030,7 +1040,7 @@ function buildParamRow(p, scopeId) {
     <input class="param-name" value="${escapeHtml(p.name)}" />
     <div class="weight-control">
       <div class="weight-bar"><div class="weight-bar-fill" style="width:0%"></div></div>
-      <input class="weight-input" type="number" min="0" step="any" value="${p.weight}" />
+      <input class="weight-input" type="number" min="0" max="10" step="1" value="${p.weight}" />
       <span class="weight-pct" title="Share of the total weight">—</span>
     </div>
     <input class="added-by" value="${escapeHtml(p.added_by || '')}" placeholder="added by" />
@@ -1054,7 +1064,12 @@ function buildParamRow(p, scopeId) {
     recomputeWeightNormalization(row.closest('.card'));
   });
   weightInput.addEventListener('change', async () => {
-    await save({ weight: Number(weightInput.value) });
+    // Clamp to a whole number 0–10 so the value always matches the /10 scale
+    // (the raw input can still hold out-of-range or decimal text on 'change').
+    const w = Math.min(10, Math.max(0, Math.round(Number(weightInput.value) || 0)));
+    weightInput.value = w;
+    recomputeWeightNormalization(row.closest('.card'));
+    await save({ weight: w });
     await renderContent();
   });
   deleteBtn.addEventListener('click', async () => {

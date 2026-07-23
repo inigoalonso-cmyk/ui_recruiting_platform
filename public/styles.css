@@ -222,7 +222,8 @@ body { overflow: hidden; }
 .folder-tab.general { color: var(--accent); }
 .folder-tab.general.active { color: var(--accent); }
 
-/* Lifecycle-mode dot at the left of each job folder in the sidebar.
+/* Lifecycle-mode marker at the left of each job folder in the sidebar: a dot for
+   leaf folders, a folder icon for parents (folders with variant subfolders).
    Neutral gray = Edit (normal), orange = Development, discreet green = Production. */
 .folder-dot {
   flex: 0 0 auto;
@@ -233,6 +234,20 @@ body { overflow: hidden; }
 }
 .folder-dot.mode-development { background: var(--mode-dev-fg); }
 .folder-dot.mode-production { background: var(--mode-prod-fg); }
+/* Parent folders swap the dot for a folder glyph; color still encodes the mode. */
+.folder-dot.is-folder {
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+}
+.folder-dot.is-folder svg { display: block; }
+.folder-dot.is-folder.mode-development { background: none; color: var(--mode-dev-fg); }
+.folder-dot.is-folder.mode-production { background: none; color: var(--mode-prod-fg); }
 /* Folder name fills the remaining width and truncates, so the dot stays pinned left. */
 .folder-tab-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
