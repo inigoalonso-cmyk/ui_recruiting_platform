@@ -121,6 +121,22 @@ async function listArchiveReasons() {
   return ashbyRequest('archiveReason.list', {});
 }
 
+/** Download a candidate's resume as a Buffer (read-only): candidate.info ->
+ *  resumeFileHandle.handle -> file.info (temporary download URL) -> fetch the PDF.
+ *  Returns { buffer, name } or null if the candidate has no resume. */
+async function getResumeBuffer(candidateId) {
+  const info = await ashbyRequest('candidate.info', { id: candidateId });
+  const rh = info && info.results && info.results.resumeFileHandle;
+  if (!rh || !rh.handle) return null;
+  const fileInfo = await ashbyRequest('file.info', { fileHandle: rh.handle });
+  const url = fileInfo && fileInfo.results && fileInfo.results.url;
+  if (!url) return null;
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`resume download failed: HTTP ${resp.status}`);
+  const buffer = Buffer.from(await resp.arrayBuffer());
+  return { buffer, name: rh.name };
+}
+
 /** Move ONE application to a specific interview stage (advance, or archive when the
  *  target stage is an Archived-type stage — then archiveReasonId is required).
  *  WRITE — needs candidatesWrite. Always scoped to a single applicationId. */

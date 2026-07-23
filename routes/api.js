@@ -664,6 +664,29 @@ router.get('/ashby/candidate-raw', requireSyncKey, async (req, res) => {
   }
 });
 
+// ---------- READ-ONLY: fetch + parse a candidate's resume/CV text ----------
+// candidate.info -> resumeFileHandle -> file.info (temp URL) -> download PDF ->
+// pdf-parse. This is the CV text the prescreening AI scores. No writes.
+router.get('/ashby/candidate-cv', requireSyncKey, async (req, res) => {
+  const candidateId = String(req.query.candidate_id || '').trim();
+  if (!candidateId) return res.status(400).json({ error: 'candidate_id query param is required' });
+  try {
+    const file = await ashby.getResumeBuffer(candidateId);
+    if (!file) return res.json({ candidate_id: candidateId, has_resume: false, cv_text: '' });
+    const text = (await parsePdfWithRetry(file.buffer)).trim();
+    res.json({
+      candidate_id: candidateId,
+      has_resume: true,
+      resume_name: file.name,
+      chars: text.length,
+      cv_text_preview: text.slice(0, 400),
+    });
+  } catch (err) {
+    console.error('[ashby/candidate-cv] failed:', err);
+    res.status(502).json({ error: 'ashby resume fetch/parse failed', detail: err.message });
+  }
+});
+
 // ---------- READ-ONLY: list Ashby custom fields (integration Phase 1) ----------
 // To find the id of the "score" custom field the prescreening will write to (and its
 // objectType). No writes — just inspects what fields exist in the Ashby account.
