@@ -661,6 +661,36 @@ router.get('/ashby/applications', requireSyncKey, async (req, res) => {
   }
 });
 
+// ---------- PRESCREEN RESULT SINK (called by the prescreening workflow) ----------
+// The workflow POSTs each candidate's score + pass/fail here. The DASHBOARD is the
+// ONLY thing that then writes to Ashby (score custom field + advance/archive), so all
+// the danger + safety guards live here, in code — never in a workflow node.
+//
+// DRY-RUN by default: unless ASHBY_WRITE_ENABLED === 'true', this only LOGS what it
+// WOULD do and returns — it does NOT touch Ashby. That lets us wire and test the
+// workflow→dashboard connection with zero risk. If someone flips it live before the
+// real writes are built, it refuses (501) rather than do something half-built.
+// Real Ashby writes + the production-mode guard come in Phase 2/3.
+router.post('/candidates/:appId/prescreen-result', requireInternalKey, async (req, res) => {
+  const appId = String(req.params.appId || '');
+  const { score, rationale, passed } = req.body || {};
+  const willAdvance = !!passed;
+  const plan = {
+    application_id: appId,
+    score,
+    rationale_present: rationale != null && String(rationale).length > 0,
+    passed: willAdvance,
+    action: willAdvance ? 'advance-to-next-stage' : 'archive',
+  };
+  const live = process.env.ASHBY_WRITE_ENABLED === 'true';
+  if (!live) {
+    console.log('[prescreen-result] DRY-RUN (no Ashby write):', JSON.stringify(plan));
+    return res.json({ ok: true, dry_run: true, plan });
+  }
+  console.warn('[prescreen-result] LIVE requested but Ashby writes not implemented yet:', JSON.stringify(plan));
+  return res.status(501).json({ ok: false, error: 'live Ashby writes not implemented yet (Phase 2/3)', plan });
+});
+
 // ---------- COMPANY FAQ (a.k.a. Global FAQ; company-wide, role-independent) ----------
 // Recruiter-facing label/value facts the JobBot agent can answer for ANY
 // candidate regardless of role (offices, funding, values, interview process…).
