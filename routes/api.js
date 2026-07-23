@@ -290,6 +290,22 @@ router.get('/jobs/:jobId/parameters', async (req, res) => {
   res.json(rows);
 });
 
+// Combined folder-open read: parameters + killer questions in ONE request (both
+// queries fire concurrently server-side). Halves the round-trips when opening a
+// folder vs fetching /parameters and /killer-questions separately.
+router.get('/jobs/:jobId/screening', async (req, res) => {
+  const jobId = req.params.jobId === 'general' ? null : req.params.jobId;
+  const [parameters, killer_questions] = await Promise.all([
+    jobId === null
+      ? db.prepare('SELECT * FROM parameters WHERE job_id IS NULL ORDER BY created_at').all()
+      : db.prepare('SELECT * FROM parameters WHERE job_id = ? ORDER BY created_at').all(jobId),
+    jobId === null
+      ? Promise.resolve([])
+      : db.prepare('SELECT * FROM killer_questions WHERE job_id = ? ORDER BY created_at').all(jobId),
+  ]);
+  res.json({ parameters, killer_questions });
+});
+
 router.post('/jobs/:jobId/parameters', async (req, res) => {
   const jobId = req.params.jobId === 'general' ? null : req.params.jobId;
   const { name, weight, added_by } = req.body;
@@ -973,24 +989,25 @@ router.get('/jobs/:jobId/evaluation-config', requireInternalKey, async (req, res
   // Recruiter-authored criteria (is_fixed = false). Model B: a variant (child)
   // folder inherits its parent "role" folder's criteria. For a top-level folder
   // (parent_id NULL) parentParams is empty -> behaviour identical to before.
-  const generalParams = await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL AND is_fixed = false').all();
-  const parentParams = job.parent_id
-    ? await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ? AND is_fixed = false').all(job.parent_id)
-    : [];
-  const jobParams = await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ? AND is_fixed = false').all(job.id);
-  const parentKillers = job.parent_id
-    ? await db.prepare('SELECT question, added_by FROM killer_questions WHERE job_id = ?').all(job.parent_id)
-    : [];
-  const ownKillers = await db.prepare('SELECT question, added_by FROM killer_questions WHERE job_id = ?').all(job.id);
+  // All the reads below are independent, so fire them concurrently (one round-trip's
+  // worth of DB latency instead of six sequential ones). The FIXED parameter (the
+  // Ashby job-description block) takes an ABSOLUTE share of the score: its weight is
+  // a PERCENTAGE (0-100). e.g. weight=20 -> the job description is 20% of the final
+  // score and the recruiter criteria split the remaining 80%. Use the folder's own
+  // fixed param; if it has none, inherit the parent's (variants inherit the role).
+  const noRows = Promise.resolve([]);
+  const noRow = Promise.resolve(undefined);
+  const [generalParams, parentParams, jobParams, parentKillers, ownKillers, ownFixed, parentFixed] = await Promise.all([
+    db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL AND is_fixed = false').all(),
+    job.parent_id ? db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ? AND is_fixed = false').all(job.parent_id) : noRows,
+    db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ? AND is_fixed = false').all(job.id),
+    job.parent_id ? db.prepare('SELECT question, added_by FROM killer_questions WHERE job_id = ?').all(job.parent_id) : noRows,
+    db.prepare('SELECT question, added_by FROM killer_questions WHERE job_id = ?').all(job.id),
+    db.prepare('SELECT name, weight, body FROM parameters WHERE job_id = ? AND is_fixed = true').get(job.id),
+    job.parent_id ? db.prepare('SELECT name, weight, body FROM parameters WHERE job_id = ? AND is_fixed = true').get(job.parent_id) : noRow,
+  ]);
   const killerQuestions = [...parentKillers, ...ownKillers];
-
-  // The FIXED parameter (the Ashby job-description block) takes an ABSOLUTE share of
-  // the score: its weight is a PERCENTAGE (0-100). e.g. weight=20 -> the job
-  // description is 20% of the final score and the recruiter criteria split the
-  // remaining 80%. Use the folder's own fixed param; if it has none, inherit the
-  // parent's (variants inherit the role's setup).
-  const fixedRow = (await db.prepare('SELECT name, weight, body FROM parameters WHERE job_id = ? AND is_fixed = true').get(job.id))
-    || (job.parent_id ? await db.prepare('SELECT name, weight, body FROM parameters WHERE job_id = ? AND is_fixed = true').get(job.parent_id) : null);
+  const fixedRow = ownFixed || parentFixed || null;
   const jobDescPct = fixedRow ? Math.min(100, Math.max(0, Number(fixedRow.weight) || 0)) : 0;
   const jobDescFrac = jobDescPct / 100;
 

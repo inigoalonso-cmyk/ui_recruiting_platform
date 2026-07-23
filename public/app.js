@@ -541,10 +541,9 @@ async function renderJobView(jobId) {
   // …then refresh from the server. Detached when we had a cached paint (so
   // switching folders isn't blocked on the network); awaited on first open so we
   // don't leave the sections empty.
-  const refresh = Promise.all([
-    api(`/jobs/${jobId}/parameters`),
-    api(`/jobs/${jobId}/killer-questions`),
-  ]).then(([params, killers]) => {
+  const refresh = api(`/jobs/${jobId}/screening`).then((data) => {
+    const params = (data && data.parameters) || [];
+    const killers = (data && data.killer_questions) || [];
     const fresh = { params, killers };
     // Only repaint when the data actually differs from what's already on screen.
     // Writes clear the cache, so a refresh normally matches the instant paint —
