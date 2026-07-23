@@ -679,6 +679,9 @@ router.get('/ashby/candidates-to-screen', requireInternalKey, async (req, res) =
   // every cron cycle forever. Once scored, they drop out of the feed. Failures leave
   // the feed anyway (they get archived). ?include_scored=1 disables the skip (debug).
   const includeScored = req.query.include_scored === '1';
+  // Optional stage filter: only screen candidates whose current interview stage title
+  // matches (e.g. ?stage=Application Review) — the real applicant-screening entry point.
+  const stageFilter = req.query.stage ? String(req.query.stage).trim() : null;
   try {
     // Resolve which jobs to scan → [{ ashbyJobId, folderId, folderName }].
     let targets;
@@ -702,6 +705,7 @@ router.get('/ashby/candidates-to-screen', requireInternalKey, async (req, res) =
         const cand = app.candidate || {};
         const candidateId = cand.id || app.candidateId || null;
         const stage = app.currentInterviewStage || app.interviewStage || {};
+        if (stageFilter && (stage.title || '') !== stageFilter) continue; // wrong stage — skip early
         const entry = {
           application_id: app.id,
           candidate_id: candidateId,
@@ -824,23 +828,26 @@ const ARCHIVE_REASON_LACKS_SKILLS = 'd826e7f7-b796-4280-9c78-6059c260ebee'; // "
 const FALLBACK_ARCHIVED_STAGE_ID = 'e2f91e41-aca6-45bd-bfc1-7c590c4e0ff7'; // Football Player plan "Archived" stage
 router.post('/ashby/test-write-score', requireSyncKey, async (req, res) => {
   const candidateId = String(req.query.candidate_id || (req.body && req.body.candidate_id) || '').trim();
+  const clear = req.query.clear === '1'; // clear the field (set empty) instead of writing a score
   const score = req.query.score != null ? req.query.score : (req.body && req.body.score);
   const live = req.query.live === '1';
   if (!candidateId) return res.status(400).json({ error: 'candidate_id is required' });
-  if (score == null || String(score) === '') return res.status(400).json({ error: 'score is required' });
+  if (!clear && (score == null || String(score) === '')) return res.status(400).json({ error: 'score is required (or ?clear=1)' });
 
+  const value = clear ? '' : String(score);
   const plan = {
     objectType: 'Candidate',
     objectId: candidateId,
     fieldId: AI_SCORE_TEST_FIELD_ID,
     field_title: 'AI Score Test',
-    value: String(score),
+    value,
+    clear,
   };
   if (!live) return res.json({ ok: true, dry_run: true, note: 'add &live=1 to actually write', plan });
 
   try {
     const r = await ashby.setCustomFieldScore({
-      objectId: candidateId, objectType: 'Candidate', fieldId: AI_SCORE_TEST_FIELD_ID, value: String(score),
+      objectId: candidateId, objectType: 'Candidate', fieldId: AI_SCORE_TEST_FIELD_ID, value,
     });
     res.json({ ok: true, dry_run: false, wrote: plan, ashby_success: !!(r && r.success) });
   } catch (err) {
