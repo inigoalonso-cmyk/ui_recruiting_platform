@@ -1059,16 +1059,16 @@ function buildFixedParamBlock(p, scopeId) {
       </span>
       <span class="fixed-param-name">${escapeHtml(p.name)}</span>
       <span class="fixed-param-count"></span>
-      <span class="fixed-param-weight" title="Importance out of 10">
-        <input class="weight-input fixed-weight-input" type="number" min="0" max="10" step="1" value="${p.weight}" />
-        <span class="fixed-param-weight-unit">/10</span>
+      <span class="fixed-param-weight" title="Percentage of the total score this job description is worth">
+        <input class="weight-input fixed-weight-input" type="number" min="0" max="100" step="1" value="${p.weight}" />
+        <span class="fixed-param-weight-unit">%</span>
       </span>
       <button class="fixed-param-delete" title="Delete this block">×</button>
     </div>
     <div class="fixed-param-preview"></div>
     <div class="fixed-param-body-wrap">
       <textarea class="fixed-param-body" rows="9" placeholder="Job description (evaluable part)…">${escapeHtml(p.body || '')}</textarea>
-      <div class="fixed-param-hint">From Ashby · edit freely — it won't be overwritten on the next sync.</div>
+      <div class="fixed-param-hint"></div>
     </div>
   `;
 
@@ -1078,12 +1078,15 @@ function buildFixedParamBlock(p, scopeId) {
   const deleteBtn = block.querySelector('.fixed-param-delete');
   const countEl = block.querySelector('.fixed-param-count');
   const previewEl = block.querySelector('.fixed-param-preview');
+  const hintEl = block.querySelector('.fixed-param-hint');
 
   const refreshMeta = () => {
     const text = (bodyInput.value || '').trim();
     const words = text ? text.split(/\s+/).length : 0;
     countEl.textContent = words ? `${words} words` : 'empty';
     previewEl.textContent = text ? text.replace(/\s+/g, ' ').slice(0, 140) + (text.length > 140 ? '…' : '') : 'No description yet.';
+    const pct = Math.min(100, Math.max(0, Math.round(Number(weightInput.value) || 0)));
+    hintEl.textContent = `Worth ${pct}% of the score · your criteria share the other ${100 - pct}%. From Ashby — edit freely; it won't be overwritten on the next sync.`;
   };
   refreshMeta();
 
@@ -1100,8 +1103,9 @@ function buildFixedParamBlock(p, scopeId) {
   // Keep the header controls from toggling the panel when clicked.
   weightInput.addEventListener('click', (e) => e.stopPropagation());
   weightInput.addEventListener('change', async () => {
-    const w = Math.min(10, Math.max(0, Math.round(Number(weightInput.value) || 0)));
+    const w = Math.min(100, Math.max(0, Math.round(Number(weightInput.value) || 0)));
     weightInput.value = w;
+    refreshMeta();
     await save({ weight: w });
   });
   bodyInput.addEventListener('input', refreshMeta);

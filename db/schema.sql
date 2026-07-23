@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS parameters (
 -- every boot (this file is the project's migration mechanism).
 ALTER TABLE parameters ADD COLUMN IF NOT EXISTS is_fixed BOOLEAN NOT NULL DEFAULT false;
 ALTER TABLE parameters ADD COLUMN IF NOT EXISTS body TEXT;
+-- weight is 0-10 for normal criteria but 0-100 for the fixed parameter (there it is
+-- an absolute PERCENTAGE of the score). Relax the CHECK to 0-100 for both. Done as
+-- drop+add (idempotent on every boot) since the original CHECK was inline at 0-10.
+ALTER TABLE parameters DROP CONSTRAINT IF EXISTS parameters_weight_check;
+ALTER TABLE parameters ADD CONSTRAINT parameters_weight_check CHECK (weight >= 0 AND weight <= 100);
 -- At most one fixed parameter per job folder (NULLs are distinct, so the virtual
 -- General bucket is unaffected — it never gets a fixed parameter anyway).
 CREATE UNIQUE INDEX IF NOT EXISTS parameters_one_fixed_per_job ON parameters (job_id) WHERE is_fixed;

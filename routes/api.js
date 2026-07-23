@@ -313,7 +313,12 @@ router.put('/parameters/:id', async (req, res) => {
   const existing = await db.prepare('SELECT * FROM parameters WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'parameter not found' });
   const w = weight !== undefined ? Number(weight) : existing.weight;
-  if (Number.isNaN(w) || w < 0 || w > 10) return res.status(400).json({ error: 'weight must be a number between 0 and 10' });
+  // Normal criteria are 0-10 (importance); the fixed parameter (job description) is
+  // 0-100 (an absolute percentage of the score).
+  const maxW = existing.is_fixed ? 100 : 10;
+  if (Number.isNaN(w) || w < 0 || w > maxW) {
+    return res.status(400).json({ error: `weight must be a number between 0 and ${maxW}` });
+  }
   // `body` (the fixed parameter's extracted text) is optional; only touched when
   // the caller sends it, so a normal weight/name edit never clears it.
   const newBody = body !== undefined ? (body === null ? null : String(body)) : existing.body;
@@ -939,13 +944,10 @@ router.get('/jobs/:jobId/evaluation-config', requireInternalKey, async (req, res
   const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'job not found' });
 
-  // The fixed parameter (is_fixed) is the raw job-description block; it is NOT a
-  // weighted scoring criterion, so it is excluded here until the scoring
-  // integration is built out. Only recruiter-authored criteria are normalized.
+  // Recruiter-authored criteria (is_fixed = false). Model B: a variant (child)
+  // folder inherits its parent "role" folder's criteria. For a top-level folder
+  // (parent_id NULL) parentParams is empty -> behaviour identical to before.
   const generalParams = await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL AND is_fixed = false').all();
-  // Model B: a variant (child) folder inherits its parent "role" folder's criteria.
-  // For a top-level folder (parent_id NULL) parentParams is empty -> behaviour
-  // identical to before.
   const parentParams = job.parent_id
     ? await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ? AND is_fixed = false').all(job.parent_id)
     : [];
@@ -956,16 +958,49 @@ router.get('/jobs/:jobId/evaluation-config', requireInternalKey, async (req, res
   const ownKillers = await db.prepare('SELECT question, added_by FROM killer_questions WHERE job_id = ?').all(job.id);
   const killerQuestions = [...parentKillers, ...ownKillers];
 
-  // Weights are relative importance, not a fixed /10 scale. Normalize each
-  // criterion by the total across ALL parameters that apply to this folder
-  // (general + parent + own) so effective_weight is its proportion of the final
-  // score and the set sums to 1. Consumers should use effective_weight.
+  // The FIXED parameter (the Ashby job-description block) takes an ABSOLUTE share of
+  // the score: its weight is a PERCENTAGE (0-100). e.g. weight=20 -> the job
+  // description is 20% of the final score and the recruiter criteria split the
+  // remaining 80%. Use the folder's own fixed param; if it has none, inherit the
+  // parent's (variants inherit the role's setup).
+  const fixedRow = (await db.prepare('SELECT name, weight, body FROM parameters WHERE job_id = ? AND is_fixed = true').get(job.id))
+    || (job.parent_id ? await db.prepare('SELECT name, weight, body FROM parameters WHERE job_id = ? AND is_fixed = true').get(job.parent_id) : null);
+  const jobDescPct = fixedRow ? Math.min(100, Math.max(0, Number(fixedRow.weight) || 0)) : 0;
+  const jobDescFrac = jobDescPct / 100;
+
+  // The recruiter criteria are normalized among THEMSELVES and then scaled to the
+  // remaining share (1 - jobDescFrac), so the whole set (criteria + job description)
+  // sums to 1. With no fixed param jobDescFrac = 0 -> identical to the old behaviour.
   const allParams = [...generalParams, ...parentParams, ...jobParams];
   const weightTotal = allParams.reduce((sum, p) => sum + p.weight, 0);
+  const normalsPresent = weightTotal > 0;
+  const criteriaShare = 1 - jobDescFrac; // portion of the score for recruiter criteria
   const withEffective = (p) => ({
     ...p,
-    effective_weight: weightTotal > 0 ? p.weight / weightTotal : 0,
+    effective_weight: normalsPresent ? (p.weight / weightTotal) * criteriaShare : 0,
   });
+  // If there are no recruiter criteria, the job description takes the whole score.
+  const jobDescEffective = fixedRow ? (normalsPresent ? jobDescFrac : 1) : 0;
+
+  const jobDescription = fixedRow ? {
+    name: fixedRow.name,
+    text: fixedRow.body || '',
+    weight_pct: jobDescPct,
+    effective_weight: jobDescEffective,
+  } : null;
+
+  // Combined, ready-to-use list: recruiter criteria (scaled) + the job description as
+  // one more weighted criterion (score the CV's overall fit to `description`).
+  const combined = allParams.map(withEffective);
+  if (jobDescription) {
+    combined.push({
+      name: jobDescription.name,
+      is_fixed: true,
+      description: jobDescription.text,
+      weight_pct: jobDescription.weight_pct,
+      effective_weight: jobDescription.effective_weight,
+    });
+  }
 
   res.json({
     job: { id: job.id, name: job.name, ashby_job_id: job.ashby_job_id, mode: job.mode, parent_id: job.parent_id },
@@ -975,6 +1010,10 @@ router.get('/jobs/:jobId/evaluation-config', requireInternalKey, async (req, res
     mode: job.mode,
     is_production: job.mode === 'production',
     weight_total: weightTotal,
+    // The job description's absolute share of the score (percentage). The recruiter
+    // criteria below share the remaining (100 - job_description_pct)%.
+    job_description_pct: jobDescPct,
+    job_description: jobDescription, // { name, text, weight_pct, effective_weight } | null
     general_parameters: generalParams.map(withEffective),
     parent_parameters: parentParams.map(withEffective),
     // job_parameters carries the parent role's params + this folder's own, so the
@@ -982,8 +1021,8 @@ router.get('/jobs/:jobId/evaluation-config', requireInternalKey, async (req, res
     // apply the full role+variant inheritance without any workflow change. For a
     // top-level folder parentParams is empty, so this equals its own params.
     job_parameters: [...parentParams, ...jobParams].map(withEffective),
-    // Combined, ready-to-use list (general + parent + own).
-    parameters: allParams.map(withEffective),
+    // Combined list: recruiter criteria (scaled) + the job description criterion.
+    parameters: combined,
     killer_questions: killerQuestions,
   });
 });
@@ -1128,10 +1167,16 @@ router.post('/jobs/:id/dev/run', uploadCv.single('cv'), async (req, res) => {
   const candidateName = String(req.body.candidate_name || req.file.originalname || 'Test candidate').trim();
 
   // Snapshot the criteria used for this run (general + job-specific + killer qs).
+  // The fixed parameter (job description) takes an absolute % of the score; the
+  // recruiter criteria split the rest — same model as /evaluation-config.
+  const devFixed = (await db.prepare('SELECT name, weight, body FROM parameters WHERE job_id = ? AND is_fixed = true').get(job.id))
+    || (job.parent_id ? await db.prepare('SELECT name, weight, body FROM parameters WHERE job_id = ? AND is_fixed = true').get(job.parent_id) : null);
   const configSnapshot = {
-    // Fixed parameter (raw JD block) excluded — not yet a weighted criterion.
     general_parameters: await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL AND is_fixed = false').all(),
     job_parameters: await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ? AND is_fixed = false').all(job.id),
+    job_description: devFixed
+      ? { name: devFixed.name, text: devFixed.body || '', weight_pct: Math.min(100, Math.max(0, Number(devFixed.weight) || 0)) }
+      : null,
     killer_questions: await db.prepare('SELECT question, expected_answer, added_by FROM killer_questions WHERE job_id = ?').all(job.id),
   };
 
