@@ -162,4 +162,5 @@ module.exports = {
   listInterviewStages,
   changeApplicationStage,
   listArchiveReasons,
+  getResumeBuffer,
 };
