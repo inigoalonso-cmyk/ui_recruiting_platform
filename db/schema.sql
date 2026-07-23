@@ -30,6 +30,17 @@ CREATE TABLE IF NOT EXISTS parameters (
   added_by TEXT,
   created_at TEXT NOT NULL DEFAULT to_char((now() AT TIME ZONE 'utc'), 'YYYY-MM-DD HH24:MI:SS')
 );
+-- The "fixed" parameter is a single large block of evaluable job-description text
+-- pulled from Ashby by the sync workflow (Role Overview / responsibilities /
+-- requirements / operating principles — the About/Why-join/GDPR sections are
+-- dropped upstream). It is kept visually distinct from the recruiter-authored
+-- weighted criteria; `body` holds the extracted text. Applied idempotently on
+-- every boot (this file is the project's migration mechanism).
+ALTER TABLE parameters ADD COLUMN IF NOT EXISTS is_fixed BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE parameters ADD COLUMN IF NOT EXISTS body TEXT;
+-- At most one fixed parameter per job folder (NULLs are distinct, so the virtual
+-- General bucket is unaffected — it never gets a fixed parameter anyway).
+CREATE UNIQUE INDEX IF NOT EXISTS parameters_one_fixed_per_job ON parameters (job_id) WHERE is_fixed;
 
 CREATE TABLE IF NOT EXISTS killer_questions (
   id TEXT PRIMARY KEY,

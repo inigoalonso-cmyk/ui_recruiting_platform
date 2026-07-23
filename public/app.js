@@ -994,7 +994,13 @@ function recomputeWeightNormalization(cardEl) {
 }
 
 function renderParamsSection(container, params, scopeId) {
+  // The fixed parameter (the Ashby job-description block) renders as its own
+  // distinct card, separate from the recruiter-authored weighted criteria.
+  const fixed = params.filter(p => p.is_fixed);
+  const normal = params.filter(p => !p.is_fixed);
+
   container.innerHTML = `
+    <div id="fixed-param-mount"></div>
     <div class="section-heading">
       <h2>Evaluation parameters</h2>
       <span class="weight-total">relative weights · auto-normalized</span>
@@ -1010,11 +1016,14 @@ function renderParamsSection(container, params, scopeId) {
     </div>
   `;
 
+  const fixedMount = container.querySelector('#fixed-param-mount');
+  fixed.forEach(p => fixedMount.appendChild(buildFixedParamBlock(p, scopeId)));
+
   const rowsEl = container.querySelector('#param-rows');
-  if (params.length === 0) {
+  if (normal.length === 0) {
     rowsEl.innerHTML = `<div class="empty-state">No parameters in this folder yet.</div>`;
   } else {
-    params.forEach(p => rowsEl.appendChild(buildParamRow(p, scopeId)));
+    normal.forEach(p => rowsEl.appendChild(buildParamRow(p, scopeId)));
     recomputeWeightNormalization(container.querySelector('.card'));
   }
 
@@ -1031,6 +1040,56 @@ function renderParamsSection(container, params, scopeId) {
       await renderContent();
     } catch (err) { showToast(err.message, true); }
   });
+}
+
+// The "fixed" parameter: the evaluable job-description block pulled from Ashby.
+// Rendered big and visually distinct from the weighted criteria. The recruiter
+// can edit the text and set its importance (0–10); both persist via PUT.
+function buildFixedParamBlock(p, scopeId) {
+  const block = document.createElement('div');
+  block.className = 'fixed-param';
+  block.innerHTML = `
+    <div class="fixed-param-head">
+      <div class="fixed-param-title">
+        <span class="fixed-param-badge">📄 From Ashby</span>
+        <span class="fixed-param-name">${escapeHtml(p.name)}</span>
+      </div>
+      <div class="fixed-param-weight">
+        <label>Importance</label>
+        <input class="weight-input fixed-weight-input" type="number" min="0" max="10" step="1" value="${p.weight}" />
+        <span class="fixed-param-weight-unit">/10</span>
+        <button class="fixed-param-delete" title="Delete this block">×</button>
+      </div>
+    </div>
+    <textarea class="fixed-param-body" rows="14" placeholder="Job description (evaluable part)…">${escapeHtml(p.body || '')}</textarea>
+    <div class="fixed-param-hint">Extracted from the Ashby job description. Edit freely — it won't be overwritten on the next sync.</div>
+  `;
+
+  const weightInput = block.querySelector('.fixed-weight-input');
+  const bodyInput = block.querySelector('.fixed-param-body');
+  const deleteBtn = block.querySelector('.fixed-param-delete');
+
+  async function save(patch) {
+    try {
+      await api(`/parameters/${p.id}`, { method: 'PUT', body: JSON.stringify(patch) });
+    } catch (err) { showToast(err.message, true); }
+  }
+
+  weightInput.addEventListener('change', async () => {
+    const w = Math.min(10, Math.max(0, Math.round(Number(weightInput.value) || 0)));
+    weightInput.value = w;
+    await save({ weight: w });
+  });
+  bodyInput.addEventListener('change', () => save({ body: bodyInput.value }));
+  deleteBtn.addEventListener('click', async () => {
+    try {
+      await api(`/parameters/${p.id}`, { method: 'DELETE' });
+      showToast('Job description block deleted');
+      await renderContent();
+    } catch (err) { showToast(err.message, true); }
+  });
+
+  return block;
 }
 
 function buildParamRow(p, scopeId) {

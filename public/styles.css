@@ -471,6 +471,67 @@ body.rail-collapsed .rail-expand-btn:hover { color: var(--text); }
   box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
 }
 
+/* The fixed parameter (Ashby job-description block): a distinct, prominent card
+   that visually separates it from the weighted criteria list below. */
+.fixed-param {
+  border: 1.5px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-bottom: 18px;
+}
+.fixed-param-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.fixed-param-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.fixed-param-badge {
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-pill);
+  padding: 3px 10px;
+}
+.fixed-param-name { font-size: 15px; font-weight: 700; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fixed-param-weight { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; }
+.fixed-param-weight label { font-size: 12px; color: var(--text-muted); }
+.fixed-param-weight .fixed-weight-input {
+  width: 56px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 14px;
+  text-align: center;
+}
+.fixed-param-weight-unit { font-size: 12px; color: var(--text-faint); }
+.fixed-param-delete { border: none; background: transparent; color: var(--text-faint); font-size: 18px; line-height: 1; cursor: pointer; padding: 2px 4px; border-radius: var(--radius-sm); }
+.fixed-param-delete:hover { color: var(--danger, #DC2626); background: var(--surface); }
+.fixed-param-body {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 160px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+.fixed-param-body:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+.fixed-param-hint { margin-top: 8px; font-size: 12px; color: var(--text-muted); }
+
 .param-row {
   display: grid;
   grid-template-columns: 1fr 210px 130px 40px;

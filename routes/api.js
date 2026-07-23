@@ -309,13 +309,16 @@ router.post('/jobs/:jobId/parameters', async (req, res) => {
 });
 
 router.put('/parameters/:id', async (req, res) => {
-  const { name, weight } = req.body;
+  const { name, weight, body } = req.body;
   const existing = await db.prepare('SELECT * FROM parameters WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'parameter not found' });
   const w = weight !== undefined ? Number(weight) : existing.weight;
   if (Number.isNaN(w) || w < 0 || w > 10) return res.status(400).json({ error: 'weight must be a number between 0 and 10' });
-  await db.prepare('UPDATE parameters SET name = COALESCE(?, name), weight = ? WHERE id = ?')
-    .run(name || null, w, req.params.id);
+  // `body` (the fixed parameter's extracted text) is optional; only touched when
+  // the caller sends it, so a normal weight/name edit never clears it.
+  const newBody = body !== undefined ? (body === null ? null : String(body)) : existing.body;
+  await db.prepare('UPDATE parameters SET name = COALESCE(?, name), weight = ?, body = ? WHERE id = ?')
+    .run(name || null, w, newBody, req.params.id);
   res.json(await db.prepare('SELECT * FROM parameters WHERE id = ?').get(req.params.id));
 });
 
@@ -515,6 +518,52 @@ router.post('/sync/ashby-job', requireSyncKey, async (req, res) => {
     res.status(200).json(result);
   } catch (err) {
     console.error('[sync/ashby-job] failed:', err);
+    res.status(500).json({ error: 'sync failed', detail: err.message });
+  }
+});
+
+// ---------- ASHBY DESCRIPTION SYNC (called by the HappyRobot workflow) ----------
+// Stores the evaluable part of an Ashby job description as the folder's single
+// "fixed" parameter. The workflow's AI node has already stripped the noise
+// (About/Why-join/GDPR) and keeps only Role Overview / responsibilities /
+// requirements / operating principles; this endpoint just persists that text.
+//
+// Like /sync/ashby-job it is ENRICH-ONLY and link-scoped:
+//   1. Resolves the folder via its job_ashby_links row; skips if there is none.
+//   2. Skips if the folder ALREADY has a fixed parameter — a recruiter may have
+//      edited its text or set its weight, and we never clobber that.
+//   3. Otherwise creates the fixed parameter with a high default weight (10) so
+//      it stands out; the recruiter tunes the % afterwards.
+const FIXED_PARAM_LABEL = 'Job description (from Ashby)';
+router.post('/sync/ashby-description', requireSyncKey, async (req, res) => {
+  const { ashby_job_id, description } = req.body || {};
+  const ashbyId = ashby_job_id == null ? '' : String(ashby_job_id).trim();
+  const text = description == null ? '' : String(description).trim();
+  if (!ashbyId) return res.status(400).json({ error: 'ashby_job_id is required' });
+  if (!text) return res.status(400).json({ error: 'description is required' });
+
+  try {
+    const result = await db.transaction(async (txDb) => {
+      const link = await txDb.prepare('SELECT * FROM job_ashby_links WHERE ashby_job_id = ?').get(ashbyId);
+      if (!link) {
+        return { skipped: true, action: 'skipped', ashby_job_id: ashbyId, note: 'no folder is linked to this Ashby job' };
+      }
+      const job = await txDb.prepare('SELECT * FROM jobs WHERE id = ?').get(link.job_id);
+      const existing = await txDb.prepare('SELECT id FROM parameters WHERE job_id = ? AND is_fixed = true').get(job.id);
+      if (existing) {
+        return {
+          skipped: true, action: 'skipped', ashby_job_id: ashbyId,
+          job: { id: job.id, name: job.name }, note: 'folder already has a fixed parameter',
+        };
+      }
+      const id = uuid();
+      await txDb.prepare('INSERT INTO parameters (id, job_id, name, weight, added_by, is_fixed, body) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(id, job.id, FIXED_PARAM_LABEL, 10, 'Ashby sync', true, text);
+      return { action: 'created', ashby_job_id: ashbyId, job: { id: job.id, name: job.name }, parameter_id: id };
+    });
+    res.status(200).json(result);
+  } catch (err) {
+    console.error('[sync/ashby-description] failed:', err);
     res.status(500).json({ error: 'sync failed', detail: err.message });
   }
 });
@@ -826,14 +875,17 @@ router.get('/jobs/:jobId/evaluation-config', requireInternalKey, async (req, res
   const job = await db.prepare('SELECT * FROM jobs WHERE id = ?').get(req.params.jobId);
   if (!job) return res.status(404).json({ error: 'job not found' });
 
-  const generalParams = await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL').all();
+  // The fixed parameter (is_fixed) is the raw job-description block; it is NOT a
+  // weighted scoring criterion, so it is excluded here until the scoring
+  // integration is built out. Only recruiter-authored criteria are normalized.
+  const generalParams = await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL AND is_fixed = false').all();
   // Model B: a variant (child) folder inherits its parent "role" folder's criteria.
   // For a top-level folder (parent_id NULL) parentParams is empty -> behaviour
   // identical to before.
   const parentParams = job.parent_id
-    ? await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ?').all(job.parent_id)
+    ? await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ? AND is_fixed = false').all(job.parent_id)
     : [];
-  const jobParams = await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ?').all(job.id);
+  const jobParams = await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ? AND is_fixed = false').all(job.id);
   const parentKillers = job.parent_id
     ? await db.prepare('SELECT question, added_by FROM killer_questions WHERE job_id = ?').all(job.parent_id)
     : [];
@@ -1013,8 +1065,9 @@ router.post('/jobs/:id/dev/run', uploadCv.single('cv'), async (req, res) => {
 
   // Snapshot the criteria used for this run (general + job-specific + killer qs).
   const configSnapshot = {
-    general_parameters: await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL').all(),
-    job_parameters: await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ?').all(job.id),
+    // Fixed parameter (raw JD block) excluded — not yet a weighted criterion.
+    general_parameters: await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id IS NULL AND is_fixed = false').all(),
+    job_parameters: await db.prepare('SELECT name, weight, added_by FROM parameters WHERE job_id = ? AND is_fixed = false').all(job.id),
     killer_questions: await db.prepare('SELECT question, expected_answer, added_by FROM killer_questions WHERE job_id = ?').all(job.id),
   };
 
