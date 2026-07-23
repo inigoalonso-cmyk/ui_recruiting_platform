@@ -1047,27 +1047,49 @@ function renderParamsSection(container, params, scopeId) {
 // can edit the text and set its importance (0–10); both persist via PUT.
 function buildFixedParamBlock(p, scopeId) {
   const block = document.createElement('div');
-  block.className = 'fixed-param';
+  // Collapsed by default so it stays compact; the header toggles it open.
+  block.className = 'fixed-param collapsed';
   block.innerHTML = `
-    <div class="fixed-param-head">
-      <div class="fixed-param-title">
-        <span class="fixed-param-badge">📄 From Ashby</span>
-        <span class="fixed-param-name">${escapeHtml(p.name)}</span>
-      </div>
-      <div class="fixed-param-weight">
-        <label>Importance</label>
+    <div class="fixed-param-head" role="button" tabindex="0">
+      <span class="fixed-param-chevron" aria-hidden="true">
+        <svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor"><path d="M6 4l4 4-4 4z"/></svg>
+      </span>
+      <span class="fixed-param-icon" aria-hidden="true">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor"><path d="M4 1.5h5L13 5.5v8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1zm4.5 1v3h3z"/></svg>
+      </span>
+      <span class="fixed-param-name">${escapeHtml(p.name)}</span>
+      <span class="fixed-param-count"></span>
+      <span class="fixed-param-weight" title="Importance out of 10">
         <input class="weight-input fixed-weight-input" type="number" min="0" max="10" step="1" value="${p.weight}" />
         <span class="fixed-param-weight-unit">/10</span>
-        <button class="fixed-param-delete" title="Delete this block">×</button>
-      </div>
+      </span>
+      <button class="fixed-param-delete" title="Delete this block">×</button>
     </div>
-    <textarea class="fixed-param-body" rows="14" placeholder="Job description (evaluable part)…">${escapeHtml(p.body || '')}</textarea>
-    <div class="fixed-param-hint">Extracted from the Ashby job description. Edit freely — it won't be overwritten on the next sync.</div>
+    <div class="fixed-param-preview"></div>
+    <div class="fixed-param-body-wrap">
+      <textarea class="fixed-param-body" rows="9" placeholder="Job description (evaluable part)…">${escapeHtml(p.body || '')}</textarea>
+      <div class="fixed-param-hint">From Ashby · edit freely — it won't be overwritten on the next sync.</div>
+    </div>
   `;
 
+  const head = block.querySelector('.fixed-param-head');
   const weightInput = block.querySelector('.fixed-weight-input');
   const bodyInput = block.querySelector('.fixed-param-body');
   const deleteBtn = block.querySelector('.fixed-param-delete');
+  const countEl = block.querySelector('.fixed-param-count');
+  const previewEl = block.querySelector('.fixed-param-preview');
+
+  const refreshMeta = () => {
+    const text = (bodyInput.value || '').trim();
+    const words = text ? text.split(/\s+/).length : 0;
+    countEl.textContent = words ? `${words} words` : 'empty';
+    previewEl.textContent = text ? text.replace(/\s+/g, ' ').slice(0, 140) + (text.length > 140 ? '…' : '') : 'No description yet.';
+  };
+  refreshMeta();
+
+  const toggle = () => block.classList.toggle('collapsed');
+  head.addEventListener('click', toggle);
+  head.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); } });
 
   async function save(patch) {
     try {
@@ -1075,13 +1097,17 @@ function buildFixedParamBlock(p, scopeId) {
     } catch (err) { showToast(err.message, true); }
   }
 
+  // Keep the header controls from toggling the panel when clicked.
+  weightInput.addEventListener('click', (e) => e.stopPropagation());
   weightInput.addEventListener('change', async () => {
     const w = Math.min(10, Math.max(0, Math.round(Number(weightInput.value) || 0)));
     weightInput.value = w;
     await save({ weight: w });
   });
+  bodyInput.addEventListener('input', refreshMeta);
   bodyInput.addEventListener('change', () => save({ body: bodyInput.value }));
-  deleteBtn.addEventListener('click', async () => {
+  deleteBtn.addEventListener('click', async (e) => {
+    e.stopPropagation();
     try {
       await api(`/parameters/${p.id}`, { method: 'DELETE' });
       showToast('Job description block deleted');
