@@ -596,6 +596,42 @@ router.post('/sync/filter-linked-postings', requireSyncKey, async (req, res) => 
   }
 });
 
+// ---------- LINKED JOB DESCRIPTIONS (called by the HappyRobot workflow) ----------
+// One call that returns the raw Ashby job-description text for every LINKED folder.
+// This exists so the workflow NEVER has to call Ashby per-item inside a loop — that
+// shape can't be validated cleanly by HappyRobot (it re-tests the per-item webhook
+// with no loop data, gets an Ashby error, and blocks the downstream reference). Here
+// the dashboard does the Ashby reads itself (it already holds the Ashby key): it lists
+// postings to map each linked jobId -> its jobPosting id, then pulls each posting's
+// descriptionPlain. The workflow then just loops this list, runs its AI extraction over
+// jobs[].description, and posts the cleaned text back to /sync/ashby-description.
+router.get('/ashby/linked-descriptions', requireSyncKey, async (req, res) => {
+  try {
+    const links = await db.prepare('SELECT ashby_job_id FROM job_ashby_links').all();
+    const linked = new Set(links.map((r) => String(r.ashby_job_id)));
+    if (linked.size === 0) return res.json({ jobs: [], count: 0 });
+
+    const list = await ashby.listJobPostings();
+    const postings = ((list && list.results) || []).filter((p) => p && linked.has(String(p.jobId)));
+
+    const jobs = [];
+    for (const p of postings) {
+      let description = '';
+      try {
+        const info = await ashby.getJobPostingInfo(p.id);
+        description = (info && info.results && info.results.descriptionPlain) || '';
+      } catch (e) {
+        console.error(`[ashby/linked-descriptions] jobPosting.info failed for ${p.id}:`, e.message);
+      }
+      jobs.push({ ashby_job_id: p.jobId, title: p.title || null, description });
+    }
+    res.json({ jobs, count: jobs.length });
+  } catch (err) {
+    console.error('[ashby/linked-descriptions] failed:', err);
+    res.status(500).json({ error: 'failed to fetch linked descriptions', detail: err.message });
+  }
+});
+
 // ---------- COMPANY FAQ (a.k.a. Global FAQ; company-wide, role-independent) ----------
 // Recruiter-facing label/value facts the JobBot agent can answer for ANY
 // candidate regardless of role (offices, funding, values, interview process…).

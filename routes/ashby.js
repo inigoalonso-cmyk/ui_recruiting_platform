@@ -52,6 +52,23 @@ async function listJobs() {
 }
 
 /**
+ * List published job postings (id = jobPosting id, jobId = the underlying job id
+ * that job_ashby_links keys on). Read-only. Descriptions are NOT included here —
+ * fetch each posting's body with getJobPostingInfo.
+ */
+async function listJobPostings(limit = 200) {
+  return ashbyRequest('jobPosting.list', { limit });
+}
+
+/**
+ * Fetch a single job posting's full content, including results.descriptionPlain
+ * / results.descriptionHtml. Read-only.
+ */
+async function getJobPostingInfo(jobPostingId) {
+  return ashbyRequest('jobPosting.info', { jobPostingId });
+}
+
+/**
  * Fetch a single application (used to resolve which job an application belongs
  * to, and its current interview stage).
  */
@@ -81,4 +98,6 @@ module.exports = {
   getApplicationInfo,
   searchCandidatesByPhone,
   listJobs,
+  listJobPostings,
+  getJobPostingInfo,
 };
