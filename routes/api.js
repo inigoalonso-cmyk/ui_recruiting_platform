@@ -649,49 +649,79 @@ router.get('/ashby/applications', requireSyncKey, async (req, res) => {
   }
 });
 
-// ---------- READ-ONLY: candidates to screen for ONE job, WITH their CV text ----------
-// The single feed the prescreening workflow reads: for each Active application on a
-// job, resolve the candidate + download & parse their resume. Always scoped to a
-// job_id (never the whole pipeline). No writes.
+// ---------- READ-ONLY: candidates to screen, WITH their CV text ----------
+// THE single feed the prescreening workflow reads. Two modes:
+//   * ?job_id=<ashby_job_id>  → that one job (used for the Football Player test).
+//   * no job_id               → EVERY folder currently in production mode (the real
+//                               run). If nothing is in production, returns 0
+//                               candidates — so the workflow safely no-ops until a
+//                               job is put live.
+// Each candidate carries: application_id, candidate_id, name, current stage, the
+// parsed cv_text, the owning folder id (`job_id`, for /jobs/:id/evaluation-config)
+// and the ashby_job_id. Read-only — never writes.
 router.get('/ashby/candidates-to-screen', requireSyncKey, async (req, res) => {
-  const jobId = String(req.query.job_id || '').trim();
-  if (!jobId) return res.status(400).json({ error: 'job_id query param is required' });
+  const reqJobId = String(req.query.job_id || '').trim();
   // Only screen candidates who APPLIED themselves (status Active). Sourced leads
   // (status Lead) are NOT auto-screened. Caller can override with ?status= (used
   // only to point the Football Player dry-run test at its Lead test candidates).
   const status = req.query.status ? String(req.query.status) : 'Active';
   try {
-    const data = await ashby.listApplications({ jobId, status });
-    const apps = (data && data.results) || [];
-    const candidates = [];
-    for (const app of apps) {
-      const cand = app.candidate || {};
-      const candidateId = cand.id || app.candidateId || null;
-      const stage = app.currentInterviewStage || app.interviewStage || {};
-      const entry = {
-        application_id: app.id,
-        candidate_id: candidateId,
-        name: cand.name || null,
-        current_stage: stage.title || null,
-        current_stage_id: stage.id || null,
-        has_resume: false,
-        cv_text: '',
-      };
-      try {
-        if (candidateId) {
-          const file = await ashby.getResumeBuffer(candidateId);
-          if (file) {
-            entry.has_resume = true;
-            entry.resume_name = file.name;
-            entry.cv_text = (await parsePdfWithRetry(file.buffer)).trim();
-          }
-        }
-      } catch (e) {
-        entry.cv_error = e.message;
-      }
-      candidates.push(entry);
+    // Resolve which jobs to scan → [{ ashbyJobId, folderId, folderName }].
+    let targets;
+    if (reqJobId) {
+      const link = await db.prepare(
+        'SELECT j.id AS folder_id, j.name AS folder_name FROM job_ashby_links l JOIN jobs j ON j.id = l.job_id WHERE l.ashby_job_id = ?',
+      ).get(reqJobId);
+      targets = [{ ashbyJobId: reqJobId, folderId: link && link.folder_id, folderName: link && link.folder_name }];
+    } else {
+      const rows = await db.prepare(
+        "SELECT l.ashby_job_id, j.id AS folder_id, j.name AS folder_name FROM job_ashby_links l JOIN jobs j ON j.id = l.job_id WHERE j.mode = 'production'",
+      ).all();
+      targets = rows.map((r) => ({ ashbyJobId: r.ashby_job_id, folderId: r.folder_id, folderName: r.folder_name }));
     }
-    res.json({ job_id: jobId, status, count: candidates.length, candidates });
+
+    const candidates = [];
+    for (const t of targets) {
+      const data = await ashby.listApplications({ jobId: t.ashbyJobId, status });
+      const apps = (data && data.results) || [];
+      for (const app of apps) {
+        const cand = app.candidate || {};
+        const candidateId = cand.id || app.candidateId || null;
+        const stage = app.currentInterviewStage || app.interviewStage || {};
+        const entry = {
+          application_id: app.id,
+          candidate_id: candidateId,
+          name: cand.name || null,
+          job_id: t.folderId, // dashboard FOLDER id, for /jobs/:id/evaluation-config
+          ashby_job_id: t.ashbyJobId,
+          folder_name: t.folderName,
+          current_stage: stage.title || null,
+          current_stage_id: stage.id || null,
+          has_resume: false,
+          cv_text: '',
+        };
+        try {
+          if (candidateId) {
+            const file = await ashby.getResumeBuffer(candidateId);
+            if (file) {
+              entry.has_resume = true;
+              entry.resume_name = file.name;
+              entry.cv_text = (await parsePdfWithRetry(file.buffer)).trim();
+            }
+          }
+        } catch (e) {
+          entry.cv_error = e.message;
+        }
+        candidates.push(entry);
+      }
+    }
+    res.json({
+      mode: reqJobId ? 'single-job' : 'all-production',
+      jobs_scanned: targets.length,
+      status,
+      count: candidates.length,
+      candidates,
+    });
   } catch (err) {
     console.error('[ashby/candidates-to-screen] failed:', err);
     res.status(502).json({ error: 'ashby candidates-to-screen failed', detail: err.message });
