@@ -115,6 +115,12 @@ async function listInterviewStages(interviewPlanId) {
   return ashbyRequest('interviewStage.list', { interviewPlanId });
 }
 
+/** List the org's archive reasons (read-only). Each has { id, text, ... }. Needed as
+ *  archiveReasonId when moving an application to the Archived stage. */
+async function listArchiveReasons() {
+  return ashbyRequest('archiveReason.list', {});
+}
+
 /** Move ONE application to a specific interview stage (advance, or archive when the
  *  target stage is an Archived-type stage — then archiveReasonId is required).
  *  WRITE — needs candidatesWrite. Always scoped to a single applicationId. */
@@ -139,4 +145,5 @@ module.exports = {
   listApplications,
   listInterviewStages,
   changeApplicationStage,
+  listArchiveReasons,
 };

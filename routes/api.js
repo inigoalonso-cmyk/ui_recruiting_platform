@@ -720,6 +720,22 @@ router.get('/ashby/interview-stages', requireSyncKey, async (req, res) => {
   }
 });
 
+// ---------- READ-ONLY: list archive reasons (integration Phase 3) ----------
+// To pick an archiveReasonId for the "did not pass -> archive" path. No writes.
+router.get('/ashby/archive-reasons', requireSyncKey, async (req, res) => {
+  try {
+    const data = await ashby.listArchiveReasons();
+    const results = (data && data.results) || [];
+    res.json({
+      count: results.length,
+      reasons: results.map((r) => ({ id: r.id, text: r.text || r.title, reasonType: r.reasonType })),
+    });
+  } catch (err) {
+    console.error('[ashby/archive-reasons] failed:', err);
+    res.status(502).json({ error: 'ashby archiveReason.list failed', detail: err.message });
+  }
+});
+
 // ---------- TEST: move ONE application's stage (advance or archive) (Phase 3) ----------
 // Locked down: writes to exactly ONE application_id, to the stage_id you pass
 // explicitly, and DRY-RUN unless ?live=1. For archiving (target is an Archived-type
