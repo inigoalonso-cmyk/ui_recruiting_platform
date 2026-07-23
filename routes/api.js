@@ -649,6 +649,23 @@ router.get('/ashby/applications', requireSyncKey, async (req, res) => {
   }
 });
 
+// ---------- READ-ONLY: list Ashby custom fields (integration Phase 1) ----------
+// To find the id of the "score" custom field the prescreening will write to (and its
+// objectType). No writes — just inspects what fields exist in the Ashby account.
+router.get('/ashby/custom-fields', requireSyncKey, async (req, res) => {
+  try {
+    const data = await ashby.listCustomFields();
+    const results = (data && data.results) || [];
+    res.json({
+      count: results.length,
+      fields: results.map((f) => ({ id: f.id, title: f.title, objectType: f.objectType, fieldType: f.fieldType })),
+    });
+  } catch (err) {
+    console.error('[ashby/custom-fields] failed:', err);
+    res.status(502).json({ error: 'ashby customField.list failed', detail: err.message });
+  }
+});
+
 // ---------- PRESCREEN RESULT SINK (called by the prescreening workflow) ----------
 // The workflow POSTs each candidate's score + pass/fail here. The DASHBOARD is the
 // ONLY thing that then writes to Ashby (score custom field + advance/archive), so all
