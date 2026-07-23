@@ -649,6 +649,21 @@ router.get('/ashby/applications', requireSyncKey, async (req, res) => {
   }
 });
 
+// ---------- READ-ONLY: raw candidate.info (find the resume file handle) ----------
+// So we can see exactly how Ashby exposes the resume/CV (resumeFileHandle, fileHandles…)
+// before building the CV fetch. No writes.
+router.get('/ashby/candidate-raw', requireSyncKey, async (req, res) => {
+  const candidateId = String(req.query.candidate_id || '').trim();
+  if (!candidateId) return res.status(400).json({ error: 'candidate_id query param is required' });
+  try {
+    const data = await ashby.getCandidateInfo(candidateId);
+    res.json(data);
+  } catch (err) {
+    console.error('[ashby/candidate-raw] failed:', err);
+    res.status(502).json({ error: 'ashby candidate.info failed', detail: err.message });
+  }
+});
+
 // ---------- READ-ONLY: list Ashby custom fields (integration Phase 1) ----------
 // To find the id of the "score" custom field the prescreening will write to (and its
 // objectType). No writes — just inspects what fields exist in the Ashby account.
