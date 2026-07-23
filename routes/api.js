@@ -666,6 +666,42 @@ router.get('/ashby/custom-fields', requireSyncKey, async (req, res) => {
   }
 });
 
+// ---------- TEST WRITE: set "AI Score Test" on ONE candidate (integration Phase 2) ----------
+// Deliberately locked down so it can only ever do the safe thing:
+//   * the field id is HARDCODED to "AI Score Test" — it can NEVER touch the real
+//     "AI Score" field.
+//   * it writes to exactly ONE candidate (candidate_id is required) — no loop.
+//   * DRY-RUN by default: it just returns the intended write. Only ?live=1 performs
+//     the real Ashby write.
+// This is a throwaway helper to validate the write direction; it is NOT the workflow.
+const AI_SCORE_TEST_FIELD_ID = '6eca71db-7cfe-4e13-ad54-e31bed8c5529'; // Ashby "AI Score Test" (Candidate, String)
+router.post('/ashby/test-write-score', requireSyncKey, async (req, res) => {
+  const candidateId = String(req.query.candidate_id || (req.body && req.body.candidate_id) || '').trim();
+  const score = req.query.score != null ? req.query.score : (req.body && req.body.score);
+  const live = req.query.live === '1';
+  if (!candidateId) return res.status(400).json({ error: 'candidate_id is required' });
+  if (score == null || String(score) === '') return res.status(400).json({ error: 'score is required' });
+
+  const plan = {
+    objectType: 'Candidate',
+    objectId: candidateId,
+    fieldId: AI_SCORE_TEST_FIELD_ID,
+    field_title: 'AI Score Test',
+    value: String(score),
+  };
+  if (!live) return res.json({ ok: true, dry_run: true, note: 'add &live=1 to actually write', plan });
+
+  try {
+    const r = await ashby.setCustomFieldScore({
+      objectId: candidateId, objectType: 'Candidate', fieldId: AI_SCORE_TEST_FIELD_ID, value: String(score),
+    });
+    res.json({ ok: true, dry_run: false, wrote: plan, ashby_success: !!(r && r.success) });
+  } catch (err) {
+    console.error('[ashby/test-write-score] failed:', err);
+    res.status(502).json({ error: 'ashby customField.setValue failed', detail: err.message });
+  }
+});
+
 // ---------- PRESCREEN RESULT SINK (called by the prescreening workflow) ----------
 // The workflow POSTs each candidate's score + pass/fail here. The DASHBOARD is the
 // ONLY thing that then writes to Ashby (score custom field + advance/archive), so all
