@@ -649,6 +649,52 @@ router.get('/ashby/applications', requireSyncKey, async (req, res) => {
   }
 });
 
+// ---------- READ-ONLY: candidates to screen for ONE job, WITH their CV text ----------
+// The single feed the prescreening workflow reads: for each Active application on a
+// job, resolve the candidate + download & parse their resume. Always scoped to a
+// job_id (never the whole pipeline). No writes.
+router.get('/ashby/candidates-to-screen', requireSyncKey, async (req, res) => {
+  const jobId = String(req.query.job_id || '').trim();
+  if (!jobId) return res.status(400).json({ error: 'job_id query param is required' });
+  const status = req.query.status ? String(req.query.status) : 'Active';
+  try {
+    const data = await ashby.listApplications({ jobId, status });
+    const apps = (data && data.results) || [];
+    const candidates = [];
+    for (const app of apps) {
+      const cand = app.candidate || {};
+      const candidateId = cand.id || app.candidateId || null;
+      const stage = app.currentInterviewStage || app.interviewStage || {};
+      const entry = {
+        application_id: app.id,
+        candidate_id: candidateId,
+        name: cand.name || null,
+        current_stage: stage.title || null,
+        current_stage_id: stage.id || null,
+        has_resume: false,
+        cv_text: '',
+      };
+      try {
+        if (candidateId) {
+          const file = await ashby.getResumeBuffer(candidateId);
+          if (file) {
+            entry.has_resume = true;
+            entry.resume_name = file.name;
+            entry.cv_text = (await parsePdfWithRetry(file.buffer)).trim();
+          }
+        }
+      } catch (e) {
+        entry.cv_error = e.message;
+      }
+      candidates.push(entry);
+    }
+    res.json({ job_id: jobId, status, count: candidates.length, candidates });
+  } catch (err) {
+    console.error('[ashby/candidates-to-screen] failed:', err);
+    res.status(502).json({ error: 'ashby candidates-to-screen failed', detail: err.message });
+  }
+});
+
 // ---------- READ-ONLY: raw candidate.info (find the resume file handle) ----------
 // So we can see exactly how Ashby exposes the resume/CV (resumeFileHandle, fileHandles…)
 // before building the CV fetch. No writes.
