@@ -725,11 +725,11 @@ router.get('/ashby/candidates-to-screen', requireInternalKey, async (req, res) =
 
 // ---------- Prescreen scoring constants ----------
 const AI_SCORE_TEST_FIELD_ID = '6eca71db-7cfe-4e13-ad54-e31bed8c5529'; // Ashby "AI Score Test" (Candidate, String)
-// Prescreen decision (confirmed with Jackson 2026-07-23): pass = score strictly > 8
-// → NO stage movement (candidate stays put). fail = score <= 8 → archive as
-// "Lacks Skills/Qualifications". The archive STAGE is resolved per-application from
-// its own interview plan (this constant is only a last-resort fallback for the
-// Football Player plan); the archive REASON is org-wide.
+// Prescreen decision: pass = score >= 8 → NO stage movement (candidate stays put) +
+// score written green. fail = score < 8 → archive as "Lacks Skills/Qualifications" +
+// score written red. The archive STAGE is resolved per-application from its own
+// interview plan (this constant is only a last-resort fallback for the Football
+// Player plan); the archive REASON is org-wide.
 const PRESCREEN_PASS_THRESHOLD = 8;
 const ARCHIVE_REASON_LACKS_SKILLS = 'd826e7f7-b796-4280-9c78-6059c260ebee'; // "Lacks Skills/Qualifications" (RejectedByOrg)
 const FALLBACK_ARCHIVED_STAGE_ID = 'e2f91e41-aca6-45bd-bfc1-7c590c4e0ff7'; // Football Player plan "Archived" stage
@@ -754,7 +754,10 @@ router.post('/candidates/:appId/prescreen-result', requireInternalKey, async (re
   const numScore = Number(body.score);
   if (!Number.isFinite(numScore)) return res.status(400).json({ error: 'a numeric score is required' });
 
-  const passed = numScore > PRESCREEN_PASS_THRESHOLD;
+  const passed = numScore >= PRESCREEN_PASS_THRESHOLD;
+  // Value written to Ashby: color-coded so the "AI Score" column reads green (pass)
+  // or red (fail) at a glance, e.g. "🟢 9/10" / "🔴 3/10".
+  const scoreDisplay = `${passed ? '🟢' : '🔴'} ${numScore}/10`;
 
   // Resolve candidate + job + interview plan from the application itself (single
   // source of truth; the workflow only has to send the application id + score).
@@ -774,6 +777,7 @@ router.post('/candidates/:appId/prescreen-result', requireInternalKey, async (re
     candidate_id: candidateId,
     ashby_job_id: ashbyJobId,
     score: numScore,
+    score_display: scoreDisplay,
     passed,
     field: 'AI Score Test',
     action: passed ? 'write score only (no stage change)' : 'write score + archive (Lacks Skills/Qualifications)',
@@ -812,7 +816,7 @@ router.post('/candidates/:appId/prescreen-result', requireInternalKey, async (re
         objectId: candidateId,
         objectType: 'Candidate',
         fieldId: AI_SCORE_TEST_FIELD_ID,
-        value: String(numScore),
+        value: scoreDisplay,
       });
       done.score_written = true;
     }
