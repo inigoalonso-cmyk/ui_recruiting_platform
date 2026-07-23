@@ -702,6 +702,47 @@ router.post('/ashby/test-write-score', requireSyncKey, async (req, res) => {
   }
 });
 
+// ---------- READ-ONLY: list interview stages of a plan (integration Phase 3) ----------
+// To find the "next" stage to advance to and the Archived-type stage. No writes.
+router.get('/ashby/interview-stages', requireSyncKey, async (req, res) => {
+  const planId = String(req.query.plan_id || '').trim();
+  if (!planId) return res.status(400).json({ error: 'plan_id query param is required' });
+  try {
+    const data = await ashby.listInterviewStages(planId);
+    const results = (data && data.results) || [];
+    res.json({
+      count: results.length,
+      stages: results.map((s) => ({ id: s.id, title: s.title, type: s.type, order: s.orderInInterviewPlan })),
+    });
+  } catch (err) {
+    console.error('[ashby/interview-stages] failed:', err);
+    res.status(502).json({ error: 'ashby interviewStage.list failed', detail: err.message });
+  }
+});
+
+// ---------- TEST: move ONE application's stage (advance or archive) (Phase 3) ----------
+// Locked down: writes to exactly ONE application_id, to the stage_id you pass
+// explicitly, and DRY-RUN unless ?live=1. For archiving (target is an Archived-type
+// stage) pass &archive_reason_id=. Reversible — you can move it back. Not the workflow.
+router.post('/ashby/test-change-stage', requireSyncKey, async (req, res) => {
+  const applicationId = String(req.query.application_id || '').trim();
+  const stageId = String(req.query.stage_id || '').trim();
+  const archiveReasonId = req.query.archive_reason_id ? String(req.query.archive_reason_id) : undefined;
+  const live = req.query.live === '1';
+  if (!applicationId || !stageId) {
+    return res.status(400).json({ error: 'application_id and stage_id are required' });
+  }
+  const plan = { applicationId, interviewStageId: stageId, archiveReasonId: archiveReasonId || null };
+  if (!live) return res.json({ ok: true, dry_run: true, note: 'add &live=1 to actually move', plan });
+  try {
+    const r = await ashby.changeApplicationStage({ applicationId, interviewStageId: stageId, archiveReasonId });
+    res.json({ ok: true, dry_run: false, moved: plan, ashby_success: !!(r && r.success) });
+  } catch (err) {
+    console.error('[ashby/test-change-stage] failed:', err);
+    res.status(502).json({ error: 'ashby application.changeStage failed', detail: err.message });
+  }
+});
+
 // ---------- PRESCREEN RESULT SINK (called by the prescreening workflow) ----------
 // The workflow POSTs each candidate's score + pass/fail here. The DASHBOARD is the
 // ONLY thing that then writes to Ashby (score custom field + advance/archive), so all

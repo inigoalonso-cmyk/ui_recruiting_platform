@@ -107,6 +107,26 @@ async function listApplications({ jobId, status, cursor, limit } = {}) {
   return ashbyRequest('application.list', body);
 }
 
+/** List the interview stages of a plan, in order. Read-only. Each stage has
+ *  { id, title, type, orderInInterviewPlan }. Used to find the "next" stage to
+ *  advance to, and the Archived-type stage. */
+async function listInterviewStages(interviewPlanId) {
+  if (!interviewPlanId) throw new Error('listInterviewStages requires an interviewPlanId');
+  return ashbyRequest('interviewStage.list', { interviewPlanId });
+}
+
+/** Move ONE application to a specific interview stage (advance, or archive when the
+ *  target stage is an Archived-type stage — then archiveReasonId is required).
+ *  WRITE — needs candidatesWrite. Always scoped to a single applicationId. */
+async function changeApplicationStage({ applicationId, interviewStageId, archiveReasonId }) {
+  if (!applicationId || !interviewStageId) {
+    throw new Error('changeApplicationStage requires applicationId and interviewStageId');
+  }
+  const body = { applicationId, interviewStageId };
+  if (archiveReasonId) body.archiveReasonId = archiveReasonId;
+  return ashbyRequest('application.changeStage', body);
+}
+
 module.exports = {
   setCustomFieldScore,
   listCustomFields,
@@ -117,4 +137,6 @@ module.exports = {
   listJobPostings,
   getJobPostingInfo,
   listApplications,
+  listInterviewStages,
+  changeApplicationStage,
 };
