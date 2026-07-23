@@ -656,15 +656,13 @@ router.get('/ashby/applications', requireSyncKey, async (req, res) => {
 router.get('/ashby/candidates-to-screen', requireSyncKey, async (req, res) => {
   const jobId = String(req.query.job_id || '').trim();
   if (!jobId) return res.status(400).json({ error: 'job_id query param is required' });
-  // Screen candidates that are still in play: applied (Active) + sourced (Lead).
-  // Never Archived/Hired. Caller can override with ?status=.
-  const statuses = req.query.status ? [String(req.query.status)] : ['Active', 'Lead'];
+  // Only screen candidates who APPLIED themselves (status Active). Sourced leads
+  // (status Lead) are NOT auto-screened. Caller can override with ?status= (used
+  // only to point the Football Player dry-run test at its Lead test candidates).
+  const status = req.query.status ? String(req.query.status) : 'Active';
   try {
-    let apps = [];
-    for (const st of statuses) {
-      const data = await ashby.listApplications({ jobId, status: st });
-      apps = apps.concat((data && data.results) || []);
-    }
+    const data = await ashby.listApplications({ jobId, status });
+    const apps = (data && data.results) || [];
     const candidates = [];
     for (const app of apps) {
       const cand = app.candidate || {};
