@@ -215,12 +215,37 @@ body { overflow: hidden; }
   text-align: left;
   cursor: pointer;
   width: 100%;
-  transition: background 0.15s ease, color 0.15s ease;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
+  transform-origin: left center;
 }
-.folder-tab:hover { background: var(--surface-alt); color: var(--text); }
-.folder-tab.active { background: var(--surface-alt); color: var(--text); font-weight: 600; }
+/* Hover "lift": the row you're pointing at grows a touch and floats on a soft
+   shadow, so the sidebar feels responsive to the cursor. */
+.folder-tab:hover {
+  background: var(--surface-alt);
+  color: var(--text);
+  transform: scale(1.025);
+  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.10);
+}
+.folder-tab.active { background: var(--surface-alt); color: var(--text); font-weight: 600; box-shadow: inset 2.5px 0 0 var(--accent); }
 .folder-tab.general { color: var(--accent); }
 .folder-tab.general.active { color: var(--accent); }
+
+/* "Move out of folder" drop zone — hidden until you start dragging a folder. */
+.folder-dropzone { display: none; }
+body.dragging-folder .folder-dropzone {
+  display: block;
+  margin: 0 0 8px;
+  padding: 10px 12px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border: 1.5px dashed var(--accent);
+  border-radius: var(--radius-sm);
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.folder-dropzone.over { background: var(--accent); color: #fff; border-style: solid; }
 
 /* Lifecycle-mode marker at the left of each job folder in the sidebar: a dot for
    leaf folders, a folder icon for parents (folders with variant subfolders).

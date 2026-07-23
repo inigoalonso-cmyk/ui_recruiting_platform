@@ -171,6 +171,21 @@ function renderFolderList() {
       reparentFolder(e.dataTransfer.getData('text/plain'), null);
     });
   }
+  // A clear "take it out of its folder" drop zone that only shows up while dragging,
+  // so pulling a variant back to the top level is unambiguous (no risk of dropping it
+  // onto another job by accident).
+  const dropZone = document.createElement('div');
+  dropZone.className = 'folder-dropzone';
+  dropZone.textContent = '⤴ Drop here to move out of its folder';
+  dropZone.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; dropZone.classList.add('over'); });
+  dropZone.addEventListener('dragleave', () => dropZone.classList.remove('over'));
+  dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dropZone.classList.remove('over');
+    reparentFolder(e.dataTransfer.getData('text/plain'), null);
+  });
+  folderListEl.appendChild(dropZone);
   // "General" is a virtual folder (its params are stored with job_id IS NULL,
   // and it's not a row in the jobs table) — so it can't be renamed or removed.
   folderListEl.appendChild(buildFolderRow({ id: 'general', name: 'General', general: true }));
@@ -256,6 +271,8 @@ function buildFolderRow(job, opts = {}) {
     ];
     // Only top-level role folders can hold variants (one level of nesting).
     if (!opts.child) items.push({ label: 'Add variant', onSelect: () => window.AshbyLink && window.AshbyLink.createSubfolder(job) });
+    // One-click un-nest for a variant — no dragging/precision needed.
+    if (opts.child) items.push({ label: 'Move out of folder', onSelect: () => reparentFolder(job.id, null) });
     items.push({ label: 'Remove', variant: 'danger', onSelect: () => confirmRemoveFolder(job) });
     row.appendChild(RowMenu.createRowMenu(items));
   }
@@ -268,8 +285,12 @@ function buildFolderRow(job, opts = {}) {
       e.dataTransfer.setData('text/plain', job.id);
       e.dataTransfer.effectAllowed = 'move';
       row.classList.add('dragging');
+      document.body.classList.add('dragging-folder'); // reveals the "move out" drop zone
     });
-    row.addEventListener('dragend', () => row.classList.remove('dragging'));
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+      document.body.classList.remove('dragging-folder');
+    });
   }
   row.addEventListener('dragover', (e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; row.classList.add('drag-over'); });
   row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
