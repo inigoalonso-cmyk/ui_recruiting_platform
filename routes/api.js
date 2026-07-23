@@ -568,6 +568,34 @@ router.post('/sync/ashby-description', requireSyncKey, async (req, res) => {
   }
 });
 
+// ---------- FILTER POSTINGS TO LINKED ONES (called by the HappyRobot workflow) ----------
+// Efficiency gate for the description sync: the workflow lists ALL Ashby job
+// postings (one cheap call, no descriptions) and posts them here; we return ONLY
+// the ones whose jobId is linked to a dashboard folder. The workflow then loops
+// over just this subset — so the expensive per-posting jobPosting.info + AI
+// extraction run only for linked jobs, not all ~100 postings.
+//
+// Body: { postings: [ { id, jobId, title? }, ... ] }  (id = Ashby jobPosting id;
+//         jobId = Ashby job id, which is what job_ashby_links keys on).
+// Returns: { postings: [ linked subset, same shape ], count }.
+router.post('/sync/filter-linked-postings', requireSyncKey, async (req, res) => {
+  const postings = (req.body && req.body.postings) || [];
+  if (!Array.isArray(postings)) {
+    return res.status(400).json({ error: 'postings must be an array of { id, jobId }' });
+  }
+  try {
+    const linkRows = await db.prepare('SELECT ashby_job_id FROM job_ashby_links').all();
+    const linked = new Set(linkRows.map((r) => String(r.ashby_job_id)));
+    const filtered = postings
+      .filter((p) => p && p.jobId != null && linked.has(String(p.jobId)))
+      .map((p) => ({ id: p.id, jobId: p.jobId, title: p.title || null }));
+    res.status(200).json({ postings: filtered, count: filtered.length });
+  } catch (err) {
+    console.error('[sync/filter-linked-postings] failed:', err);
+    res.status(500).json({ error: 'filter failed', detail: err.message });
+  }
+});
+
 // ---------- COMPANY FAQ (a.k.a. Global FAQ; company-wide, role-independent) ----------
 // Recruiter-facing label/value facts the JobBot agent can answer for ANY
 // candidate regardless of role (offices, funding, values, interview process…).
