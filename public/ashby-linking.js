@@ -14,17 +14,39 @@
     return openJobsCache.jobs;
   }
 
+  // The full links list (all folders) is small and only changes when someone links/
+  // unlinks or runs a Sync — so cache it client-side too. This kills the per-folder-
+  // open round-trip to /ashby/links that made opening a folder feel slow. Cleared on
+  // any link/unlink and by refreshJobs() (after a Sync).
+  let linksCache = null; // { at, links }
+  const LINKS_TTL_MS = 60 * 1000;
+  async function getAllLinks() {
+    if (linksCache && Date.now() - linksCache.at < LINKS_TTL_MS) return linksCache.links;
+    const res = await api('/ashby/links');
+    linksCache = { at: Date.now(), links: res || [] };
+    return linksCache.links;
+  }
+  const clearLinksCache = () => { linksCache = null; };
+  const cachesWarm = () =>
+    linksCache && Date.now() - linksCache.at < LINKS_TTL_MS
+    && openJobsCache && Date.now() - openJobsCache.at < OPEN_JOBS_TTL_MS;
+
   // Render the "Ashby jobs" picker for a folder into mountEl: current links (with
   // unlink) + a dropdown of Open Ashby jobs (ones linked elsewhere are greyed).
   async function renderPicker(mountEl, job) {
     if (!mountEl) return;
-    mountEl.innerHTML = '<div class="ashby-link-box"><div class="ashby-muted">Loading Ashby jobs…</div></div>';
+    // Only show the loading state when we'll actually hit the network — if both
+    // caches are warm the picker renders instantly with no flash.
+    if (!cachesWarm()) {
+      mountEl.innerHTML = '<div class="ashby-link-box"><div class="ashby-muted">Loading Ashby jobs…</div></div>';
+    }
     let allLinks; let openJobs;
     try {
-      // One /ashby/links call now carries every folder's links, so we derive both
-      // this folder's links and the "linked elsewhere" set from it — no extra fetch.
+      // Both come from client-side caches after the first load, so re-opening any
+      // folder is instant (no round-trip). One links list carries every folder's
+      // links, so we derive this folder's links + the "linked elsewhere" set from it.
       [allLinks, openJobs] = await Promise.all([
-        api('/ashby/links'),
+        getAllLinks(),
         getOpenJobs(),
       ]);
     } catch (err) {
@@ -63,6 +85,7 @@
       try {
         await api(`/jobs/${job.id}/ashby-links/${b.dataset.link}`, { method: 'DELETE' });
         showToast('Unlinked');
+        clearLinksCache();
         await loadJobs();
         renderPicker(mountEl, job);
       } catch (e) { showToast(e.message, true); }
@@ -79,6 +102,7 @@
           body: JSON.stringify({ ashby_job_id: opt.value, ashby_job_title: opt.dataset.title }),
         });
         showToast('Linked');
+        clearLinksCache();
         await loadJobs();
         renderPicker(mountEl, job);
       } catch (e) { showToast(e.message, true); }
@@ -97,5 +121,5 @@
     } catch (e) { showToast(e.message, true); }
   }
 
-  window.AshbyLink = { renderPicker, createSubfolder, refreshJobs: () => { openJobsCache = null; } };
+  window.AshbyLink = { renderPicker, createSubfolder, refreshJobs: () => { openJobsCache = null; linksCache = null; } };
 })();
