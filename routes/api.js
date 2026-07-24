@@ -601,9 +601,28 @@ router.post('/sync/ashby-description', requireSyncKey, async (req, res) => {
 // jobs[].description, and posts the cleaned text back to /sync/ashby-description.
 router.get('/ashby/linked-descriptions', requireSyncKey, async (req, res) => {
   try {
-    const links = await db.prepare('SELECT ashby_job_id FROM job_ashby_links').all();
-    const linked = new Set(links.map((r) => String(r.ashby_job_id)));
-    if (linked.size === 0) return res.json({ jobs: [], count: 0 });
+    const links = await db.prepare('SELECT ashby_job_id, job_id FROM job_ashby_links').all();
+    if (links.length === 0) return res.json({ jobs: [], count: 0 });
+
+    // Idempotency: by default only return jobs whose folder does NOT yet have a
+    // fixed parameter (its description). This keeps a run from paying for an
+    // Ashby jobPosting.info read + an AI extraction on folders already synced —
+    // the /sync write is skip-guarded anyway, but this stops the wasted work
+    // upstream so the loop only ever touches new links. Pass ?all=1 to force a
+    // full pass (e.g. to re-pull descriptions after clearing them).
+    const includeAll = req.query.all === '1' || req.query.all === 'true';
+    let candidates = links;
+    if (!includeAll) {
+      const doneRows = await db
+        .prepare('SELECT DISTINCT job_id FROM parameters WHERE is_fixed = true AND job_id IS NOT NULL')
+        .all();
+      const done = new Set(doneRows.map((r) => String(r.job_id)));
+      candidates = links.filter((l) => !done.has(String(l.job_id)));
+    }
+    const linked = new Set(candidates.map((r) => String(r.ashby_job_id)));
+    if (linked.size === 0) {
+      return res.json({ jobs: [], count: 0, note: 'all linked jobs already have a description' });
+    }
 
     const list = await ashby.listJobPostings();
     const postings = ((list && list.results) || []).filter((p) => p && linked.has(String(p.jobId)));
