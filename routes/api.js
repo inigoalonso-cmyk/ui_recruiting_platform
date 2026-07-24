@@ -625,7 +625,19 @@ router.get('/ashby/linked-descriptions', requireSyncKey, async (req, res) => {
     }
 
     const list = await ashby.listJobPostings();
-    const postings = ((list && list.results) || []).filter((p) => p && linked.has(String(p.jobId)));
+    const matched = ((list && list.results) || []).filter((p) => p && linked.has(String(p.jobId)));
+
+    // Ashby returns MULTIPLE postings per job (e.g. one job can have 4 postings),
+    // all sharing the same jobId. Collapse to one posting per jobId so the
+    // workflow loop (and our jobPosting.info reads) touch each job exactly once.
+    const seen = new Set();
+    const postings = [];
+    for (const p of matched) {
+      const key = String(p.jobId);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      postings.push(p);
+    }
 
     const jobs = [];
     for (const p of postings) {
