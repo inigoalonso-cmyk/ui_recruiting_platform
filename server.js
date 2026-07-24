@@ -24,7 +24,7 @@ app.use('/api', authRoutes);
 // The login page and the few assets it needs must be reachable without a session.
 const PUBLIC_PATHS = new Set(['/login', '/login.html', '/logo.png', '/favicon.ico']);
 
-// Access gate. Browser traffic needs a valid Google session cookie; machine
+// Access gate. Browser traffic needs a valid Okta session cookie; machine
 // traffic (Ashby / HappyRobot / JobBot) carries its own x-api-key and is left
 // to the per-route key guards downstream.
 app.use((req, res, next) => {
