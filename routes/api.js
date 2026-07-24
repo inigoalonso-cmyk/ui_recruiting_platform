@@ -827,6 +827,30 @@ router.post('/candidates/:appId/prescreen-result', requireInternalKey, async (re
   }
   const isProd = !!folder && folder.mode === 'production';
 
+  // Record EVERY prescreen result for history/analytics, whether or not we go on
+  // to write to Ashby below (dry-run included). The analytics funnel and the
+  // History timeline read from score_log — without this row they stay empty no
+  // matter how many candidates the workflow scores. job_id is the INTERNAL
+  // folder id (what the analytics job filter uses); null if the Ashby job isn't
+  // linked to a folder yet.
+  const logId = uuid();
+  try {
+    await db.prepare(`
+      INSERT INTO score_log (id, job_id, ashby_candidate_id, ashby_application_id, score, status, breakdown, synced_to_ashby)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+    `).run(
+      logId,
+      folder ? folder.id : null,
+      candidateId,
+      appId,
+      numScore,
+      passed ? 'passed' : 'failed',
+      JSON.stringify({ rationale: body.rationale || null, passed }),
+    );
+  } catch (e) {
+    console.error('[prescreen-result] score_log insert failed:', e.message);
+  }
+
   if (!enabled || !isProd) {
     const reason = !enabled ? 'ASHBY_WRITE_ENABLED is not "true"' : 'owning folder is not in production mode';
     console.log(`[prescreen-result] DRY-RUN (${reason}):`, JSON.stringify(plan));
@@ -869,6 +893,9 @@ router.post('/candidates/:appId/prescreen-result', requireInternalKey, async (re
         archiveReasonId: ARCHIVE_REASON_LACKS_SKILLS,
       });
       done.archived = true;
+    }
+    if (done.score_written) {
+      await db.prepare('UPDATE score_log SET synced_to_ashby = 1 WHERE id = ?').run(logId);
     }
     console.log('[prescreen-result] LIVE write done:', JSON.stringify({ plan, done }));
     return res.json({ ok: true, dry_run: false, plan, done });
